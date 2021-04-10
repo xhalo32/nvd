@@ -1,0 +1,287 @@
+.TH nvd 1 2021-04-09 nvd "User Commands"
+.SH NAME
+nvd \- Nix/NixOS package version diff tool
+.SH SYNOPSIS
+.P
+.B nvd [ -h | --help ]
+.P
+.B nvd [ --color=(auto|always|never) ] root1 root2
+.SH DESCRIPTION
+.P
+.B nvd
+is a tool for diffing the versions of all store paths in the closures of two Nix
+store paths, neatly summarizing the differences.  This is mainly intended for
+comparing two system configurations and is inspired by the output of
+.B emerge -pv
+from Gentoo's Portage package manager.
+.B nvd
+could also be likened to the output of Debian's
+.B apt upgrade -V,
+or any equivalent from other distributions' package managers.
+.B nvd
+isn't limited to comparing system configurations though, and can work with any
+two store paths.
+.P
+When given two system configurations,
+.B nvd
+distinguishes between packages that are explicitly included in
+.B environment.systemPackages,
+versus the rest of the packages that make up the system.  The former packages
+are dubbed
+.I selected packages.
+.B nvd
+marks and bolds any selected packages it lists.  Additionally,
+.B nvd
+reports on any changes to packages' selection states between the two
+configurations.  This is done by looking at all packages that are referenced
+directly from the configurations' system paths, within each
+.I <system>/sw
+subdirectory.  When either of the arguments isn't a system configuration,
+i.e. when either of the arguments is missing a
+.I sw
+subdirectory, then
+.I selected packages
+refer to direct dependencies of each of the arguments instead, and the
+comparison is still performed.
+.B nvd
+doesn't actually know if a Nix package represents a system configuration; it
+just uses the existence of a
+.I sw
+directory as a heuristic.
+.P
+.B nvd
+relies on parsing Nix store paths into (pname, version) pairs, by looking at the
+part of the store path after the hash and splitting on the first occurence of
+.I /-[0-9]/
+(then also stripping off a suffix of
+.I .drv
+if that is present).  If a version cannot be found from the path, the string
+.I <none>
+is used instead.  Packages are identified by their
+.B pnames
+this way.  This will not properly handle if
+.I -[0-9]
+occurs within a Nix expression's actual
+.B pname.
+Another limitation is that this ends up treating multiple outputs from a
+derivation as distinct versions of the derivation with the output names appended
+to the version strings, although this produces reasonable output.
+.P
+.B nvd
+sorts versions using the same algorithm as
+.B builtins.compareVersions
+and
+.B nix-env -u,
+for more details see:
+.I https://nixos.org/manual/nix/stable/#versions
+.SH OPTIONS
+.P
+.TP
+-h, --help
+Displays a brief help message.
+.TP
+--color=(auto|always|never)
+When to display colour.  The default
+.B auto
+detects whether stdout is a terminal and only uses colour if it is.  Passing
+.B always
+forces colour to always be used, and passing
+.B never
+forces colour to never be used.
+.SH OUTPUT
+.P
+The output of
+.B nvd
+displays the given names of the two store paths being compared on the first two
+lines, then changed packages on subsequent lines, one line per package, grouped
+by the type of change.  Newly added or removed packages, packages with version
+or count changes, and packages with selection state changes are displayed.  Hash changes are
+.B not
+considered important, and will not cause a package to be displayed, however
+changes in the number of times a package
+.B (pname)
+appears will.
+.P
+The first two lines of output display the paths being compared:
+.P
+.RS
+.EX
+<<< /nix/var/nix/profiles/system-1-link
+>>> /nix/var/nix/profiles/system-2-link
+.EE
+.RE
+.P
+After this, packages are listed.  Each package is displayed on a line like the
+following.
+.P
+.RS
+.EX
+[U.]  #1  linux                   5.4.99 -> 5.4.100
+ ^^   ^   ^                       ^
+ ||   |   package name            package versions
+ ||   count of packages within the section
+ |package selection state
+ package install state
+.EE
+.RE
+.P
+The
+.B package install state
+is a single character indicating the whether the package is newly being added or
+removed, upgraded or downgraded.  The possibilities here are:
+.P
+.RS
+.EX
+A: Package is newly added to the closure.
+R: All versions of the package are being removed the closure.
+U: The package is being upgraded.
+D: The package is being downgraded.
+C: None of the above apply; unspecified changes.
+.EE
+.RE
+.P
+Packages can be displayed with
+.B C
+install state for a few different reasons, including the number of copies of an
+existing version in the closure changing, or due to the selection state changing
+even if the versions stay the same.  Also, upgrades (downgrades) are determined
+by checking whether all new versions of the package are strictly higher (lower)
+than all old versions of the package, so there are scenarios where a package
+will be labelled as
+.B C
+rather than
+.B U
+or
+.B D
+as it perhaps should be.
+.P
+The
+.B package selection state
+character indicates the presence of the package in
+.B environment.systemPackages,
+and changes to that inclusion.  The possibilities here are:
+.P
+.RS
+.EX
++: Package is newly selected in environment.systemPackages.
+-: Package is newly unselected.
+*: Package is selected; state unchanged.
+\&.: Package is not selected; it's a dependency.
+.EE
+.RE
+.P
+If there are multiple versions of a package, they will be shown separated by
+commas.  If there are multiple occurences of a single package version,  they will be shown with a
+.BI x N
+suffix for the number of times
+.I N
+the version is present.  Versions are always displayed in ascending order.  If
+there is any change between the old and new versions of a package, then first
+the old versions will be displayed, then
+.B ->,
+then the new versions.
+.P
+The displayed version strings can be lengthly for some packages, for example:
+.P
+.RS
+.EX
+[C*]  #05  glib    2.64.5 x2, 2.64.5-bin x2, 2.64.5-dev, 2.66.4 -> 2.64.6 x2, 2.64.6-bin x2, 2.64.6-dev, 2.66.4
+[C.]  #06  gnutls  3.6.15 x3 -> 3.6.15, 3.7.1 x2
+.EE
+.RE
+.SH EXAMPLES
+.P
+Here is an example where the games
+.B liquidwar6
+and
+.B neverball
+have been installed.  A number of packages have been pulled in as dependencies,
+plus additional versions of some existing packages:
+.P
+.RS
+.EX
+$ nvd /nix/var/nix/profiles/system-{29,30}-link
+<<< /nix/var/nix/profiles/system-29-link
+>>> /nix/var/nix/profiles/system-30-link
+Version changes:
+[C.]  #1  SDL2_ttf            2.0.15 -> 2.0.15 x2
+[C.]  #2  pkg-config          0.29.2 -> 0.29.2 x2
+[C.]  #3  pkg-config-wrapper  0.29.2 -> 0.29.2 x2
+Added packages:
+[A.]  #1  CUnit         2.1-3
+[A.]  #2  SDL_mixer     1.2.12
+[A.]  #3  SDL_ttf       2.0.11
+[A+]  #4  liquidwar6    0.6.3902
+[A+]  #5  neverball     1.6.0
+[A.]  #6  physfs        3.0.2
+[A.]  #7  smpeg-svn390  <none>
+Closure size: 2382 -> 2392 (21 paths added, 11 paths removed, delta +10).
+.EE
+.RE
+.P
+Here is another example, where several updates have been pulled in from Nixpkgs,
+including in
+.B cpupower
+(which is using the Linux kernel's version) and
+.B xterm
+which are on the system path.  Additionally,
+.B gpsbabel
+and
+.B gpxsee
+have been installed.
+.P
+.RS
+.EX
+$ nvd /nix/var/nix/profiles/system-{33,34}-link
+<<< /nix/var/nix/profiles/system/system-33-link
+>>> /nix/var/nix/profiles/system/system-34-link
+Version changes:
+[U*]  #1  cpupower                5.4.99 -> 5.4.100
+[U.]  #2  initrd-linux            5.4.99 -> 5.4.100
+[U.]  #3  linux                   5.4.99 -> 5.4.100
+[U.]  #4  nixos-system-unnamed    20.09.git.d041da76935 -> 20.09.git.872a1ebbb1b
+[U.]  #5  system76-acpi-module    1.0.1-5.4.99 -> 1.0.1-5.4.100
+[U.]  #6  system76-io-module      1.0.1-5.4.99 -> 1.0.1-5.4.100
+[U.]  #7  x86_energy_perf_policy  5.4.99 -> 5.4.100
+[U*]  #8  xterm                   353 -> 366
+Added packages:
+[A+]  #1  gpsbabel        1.6.0
+[A+]  #2  gpxsee          7.31
+[A.]  #3  qttranslations  5.15.2
+Closure size: 2480 -> 2483 (44 paths added, 41 paths removed, delta +3).
+.EE
+.RE
+.P
+.P
+In this next example, a Nixpkgs update was performed that caused some 16 paths
+in the system to be rebuilt that don't affect the versions or counts or
+selection states of any installed packages.  The only visible change is the
+changing version of the system derivation itself.  Note that it is
+.B incorrectly
+reported as a downgrade because the new Git revision sorts lower than the old
+one, despite this actually being a newer commit than the old one:
+.P
+.RS
+.EX
+$ nvd /nix/var/nix/profiles/system-{43,44}-link
+<<< /nix/var/nix/profiles/system/system-43-link
+>>> /nix/var/nix/profiles/system/system-44-link
+Version changes:
+[D.]  #1  nixos-system-unnamed  20.09.git.61092780ec5 -> 20.09.git.f79caa0b693
+Closure size: 2329 -> 2329 (16 paths added, 16 paths removed, delta +0).
+.EE
+.RE
+.P
+It is possible for
+.B nvd
+to output no packages at all if no versions have changed:
+.P
+.RS
+.EX
+$ nvd /nix/var/nix/profiles/system-{23,24}-link
+<<< /nix/var/nix/profiles/system/system-23-link
+>>> /nix/var/nix/profiles/system/system-24-link
+No version or selection state changes.
+Closure size: 2191 -> 2191 (3 paths added, 3 paths removed, delta +0).
+.EE
+.RE
