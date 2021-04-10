@@ -1,7 +1,10 @@
 { pkgs ? import <nixpkgs> {} }:
-with pkgs;
+let
+  inherit (pkgs) lib nix-gitignore python3 stdenv;
+in
 stdenv.mkDerivation {
-  name = "nvd";
+  pname = "nvd";
+  version = "0.0.1";
 
   src = nix-gitignore.gitignoreSourcePure [ ./.gitignore ] ./src;
 
@@ -19,4 +22,12 @@ stdenv.mkDerivation {
     install -m444 -Dt $out/share/man/man1 nvd.1.gz
     runHook postInstall
   '';
+
+  meta = {
+    description = "Nix/NixOS package version diff tool";
+    homepage = "https://gitlab.com/khumba/nvd";
+    license = lib.licenses.asl20;
+    maintainers = [ lib.maintainers.khumba ];
+    platforms = lib.platforms.all;
+  };
 }
