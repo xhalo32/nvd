@@ -237,22 +237,19 @@ class PackageManifest:
 
     @staticmethod
     def parse_tree(root: Path) -> "PackageManifest":
-        assert isinstance(root, Path), f"Not a Path: {root!r}"
-
-        store_paths = set()
-        for curdir, dirs, files in os.walk(root, onerror=raise_arg):
-            for filename in files:
-                path_str = os.path.join(curdir, filename)
-                if os.path.islink(path_str):
-                    store_paths.add(StorePath(os.readlink(path_str)).to_base_path())
+        direct_deps: List[str] = subprocess.run(
+            ["nix-store", "--query", "--references", str(root)],
+            stdout=PIPE,
+            text=True
+        ).stdout.rstrip("\n").split("\n")
 
         packages = []
-        for store_path in store_paths:
-            pname, version = parse_pname_version(str(store_path.path()))
+        for dep_path in direct_deps:
+            pname, version = parse_pname_version(dep_path)
             packages.append(Package(
                 pname=pname,
                 version=Version(version),
-                store_path=store_path,
+                store_path=StorePath(dep_path),
             ))
 
         return PackageManifest(packages)
@@ -455,8 +452,8 @@ def main():
     right_manifest: Optional[PackageManifest] = None
 
     if (left_resolved / "sw").is_dir() and (right_resolved / "sw").is_dir():
-        left_manifest = PackageManifest.parse_tree(left_resolved / "sw")
-        right_manifest = PackageManifest.parse_tree(right_resolved / "sw")
+        left_manifest = PackageManifest.parse_tree((left_resolved / "sw").resolve())
+        right_manifest = PackageManifest.parse_tree((right_resolved / "sw").resolve())
     else:
         left_manifest = PackageManifest.parse_tree(left_resolved)
         right_manifest = PackageManifest.parse_tree(right_resolved)
