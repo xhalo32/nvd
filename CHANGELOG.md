@@ -1,6 +1,10 @@
 # nvd changelog
 
-## 0.1.0
+## 0.1.1 (2021-05-16)
+
+- Fix handling of SIGPIPE to exit cleanly.
+
+## 0.1.0 (2021-05-16)
 
 - Add a mandatory action argument to the CLI.  The existing diff functionality
   is under the `diff` command.  A new `list` command is now implemented as well

@@ -45,10 +45,13 @@ import subprocess
 import sys
 from collections import namedtuple
 from pathlib import Path
+from signal import SIGPIPE, SIG_DFL, signal
 from subprocess import PIPE
 from typing import Dict, List, Optional, Tuple, Union
 
-NVD_VERSION = "0.1.0"
+signal(SIGPIPE, SIG_DFL)  # Python handles SIGPIPE improperly by default.
+
+NVD_VERSION = "0.1.1"
 
 USE_COLOUR = False
 
