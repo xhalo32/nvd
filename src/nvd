@@ -73,11 +73,11 @@ def sgr(*args):
     return "\x1b[" + ";".join(str(arg) for arg in args) + "m"
 
 INST_INSTALLED = "I"
-INST_ADDED = sgr(SGR_FG + SGR_BRIGHT + SGR_GREEN) + "A"
-INST_REMOVED = sgr(SGR_FG + SGR_BRIGHT + SGR_RED) + "R"
-INST_UPGRADED = sgr(SGR_FG + SGR_BRIGHT + SGR_CYAN) + "U"
-INST_DOWNGRADED = sgr(SGR_FG + SGR_BRIGHT + SGR_YELLOW) + "D"
-INST_CHANGED = sgr(SGR_FG + SGR_BRIGHT + SGR_MAGENTA) + "C"
+INST_ADDED = "A"
+INST_REMOVED = "R"
+INST_UPGRADED = "U"
+INST_DOWNGRADED = "D"
+INST_CHANGED = "C"
 
 SEL_SELECTED = "*"
 SEL_UNSELECTED = "."
@@ -635,12 +635,24 @@ def parse_args():
 
 def main():
     global USE_COLOUR
+    global INST_ADDED
+    global INST_REMOVED
+    global INST_UPGRADED
+    global INST_DOWNGRADED
+    global INST_CHANGED
 
     args = parse_args()
     action = args.action
     USE_COLOUR = args.color == "always" or (args.color == "auto" and sys.stdout.isatty())
     del args.action
     del args.color
+
+    if USE_COLOUR:
+        INST_ADDED = sgr(SGR_FG + SGR_BRIGHT + SGR_GREEN) + INST_ADDED
+        INST_REMOVED = sgr(SGR_FG + SGR_BRIGHT + SGR_RED) + INST_REMOVED
+        INST_UPGRADED = sgr(SGR_FG + SGR_BRIGHT + SGR_CYAN) + INST_UPGRADED
+        INST_DOWNGRADED = sgr(SGR_FG + SGR_BRIGHT + SGR_YELLOW) + INST_DOWNGRADED
+        INST_CHANGED = sgr(SGR_FG + SGR_BRIGHT + SGR_MAGENTA) + INST_CHANGED
 
     if action is None:
         print("nvd: Subcommand required, see 'nvd --help'.")
