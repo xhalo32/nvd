@@ -48,6 +48,8 @@ from pathlib import Path
 from subprocess import PIPE
 from typing import Dict, List, Optional, Tuple, Union
 
+NVD_VERSION = "0.1.0"
+
 USE_COLOUR = False
 
 SGR_RESET = 0
@@ -586,6 +588,12 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Nix/NixOS package version diff tool",
         epilog="See the nvd(1) manual page for more information.",
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"nvd {NVD_VERSION}",
     )
 
     parser.add_argument(
