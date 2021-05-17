@@ -1,5 +1,7 @@
 # nvd changelog
 
+## 0.1.2 (unreleased)
+
 ## 0.1.1 (2021-05-16)
 
 - Fix handling of SIGPIPE to exit cleanly.
