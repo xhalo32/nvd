@@ -17,14 +17,14 @@ coloured specially and changes to this list are reported.
 I recommend wrapping your usual `nixos-rebuild` call in a script that compares
 the result to the current system:
 
-    nixos-rebuild build "$@" && nvd /run/current-system result
+    nixos-rebuild build "$@" && nvd diff /run/current-system result
 
 Here is an example session.  We can see that Nixpkgs updates have been pulled
 in, bringing in various package updates.  Firefox and cpupower have been
 installed explicitly in `systemPackages`, and `bpytop` has been newly added to
 the list:
 
-    $ nvd /nix/var/nix/profiles/system-{14,15}-link
+    $ nvd diff /nix/var/nix/profiles/system-{14,15}-link
     <<< /nix/var/nix/profiles/system-14-link
     >>> /nix/var/nix/profiles/system-15-link
     Version changes:
