@@ -19,6 +19,7 @@
 # See the nvd(1) man page for user-facing docs.
 
 # Package install state (by pname):
+# I: Installed (unchanged)
 # A: Added to closure
 # R: Removed from closure
 # U: Upgrade
@@ -36,6 +37,7 @@
 # R: Package manifest only available on the right; selected there.
 
 import argparse
+import fnmatch
 import os
 import os.path
 import re
@@ -46,24 +48,7 @@ from pathlib import Path
 from subprocess import PIPE
 from typing import Dict, List, Optional, Tuple, Union
 
-parser = argparse.ArgumentParser(
-    description="Nix/NixOS package version diff tool",
-    epilog="See the nvd(1) manual page for more information.",
-)
-parser.add_argument(
-    "--color",
-    default="auto",
-    help="Controls use of colour; one of 'auto', 'never', 'always'.")
-parser.add_argument(
-    "root1",
-    help="The first Nix store ptah to compare.")
-parser.add_argument(
-    "root2",
-    help="The second Nix store path to compare.")
-
-ARGS = parser.parse_args()
-
-USE_COLOUR = ARGS.color == "always" or (ARGS.color == "auto" and sys.stdout.isatty())
+USE_COLOUR = False
 
 SGR_RESET = 0
 SGR_BOLD = 1
@@ -85,6 +70,7 @@ def sgr(*args):
         return ""
     return "\x1b[" + ";".join(str(arg) for arg in args) + "m"
 
+INST_INSTALLED = "I"
 INST_ADDED = sgr(SGR_FG + SGR_BRIGHT + SGR_GREEN) + "A"
 INST_REMOVED = sgr(SGR_FG + SGR_BRIGHT + SGR_RED) + "R"
 INST_UPGRADED = sgr(SGR_FG + SGR_BRIGHT + SGR_CYAN) + "U"
@@ -257,6 +243,9 @@ class PackageManifest:
     def contains_pname(self, pname: str) -> bool:
         return pname in self._packages_by_pname
 
+    def all_pnames(self):
+        return self._packages_by_pname.keys()
+
 class PackageManifestPair:
     def __init__(
             self,
@@ -378,6 +367,10 @@ def print_package_list(
         "Expect either one versions map, or a fixed install state."
     have_single_version = right_versions_map is None
 
+    if not pnames:
+        print("No packages to display.")
+        return
+
     count = 1
     count_width = len(str(len(pnames)))
     count_format_str = "#{:0" + str(count_width) + "d}"
@@ -430,9 +423,51 @@ def print_package_list(
         ))
         count += 1
 
-def main():
-    left_path = Path(ARGS.root1)
-    right_path = Path(ARGS.root2)
+def run_list(*, root, only_selected, name_patterns):
+    path = Path(root)
+
+    if not path.exists():
+        sys.stderr.write(f"Path does not exist: {path}\n")
+        sys.exit(1)
+
+    path = path.resolve()
+    if (path / "sw").is_dir():
+        manifest = PackageManifest.parse_tree((path / "sw").resolve())
+    else:
+        manifest = PackageManifest.parse_tree(path / "sw")
+
+    closure_paths: List[str] = subprocess.run(
+        ["nix-store", "-qR", str(path)],
+        stdout=PIPE,
+        text=True,
+    ).stdout.rstrip("\n").split("\n")
+
+    closure_map: Dict[str, List[str]] = closure_paths_to_map(closure_paths)
+
+    if only_selected:
+        target_pnames = list(manifest.all_pnames())
+    else:
+        target_pnames = list(closure_map.keys())
+
+    target_pnames = [
+        pname
+        for pname in target_pnames
+        if all(fnmatch.fnmatch(pname, pattern) for pattern in name_patterns)
+    ]
+
+    target_pnames.sort()
+
+    print_package_list(
+        pnames=target_pnames,
+        manifest_pair=PackageManifestPair(manifest, manifest),
+        left_versions_map=closure_map,
+        right_versions_map=None,
+        fixed_install_state=INST_INSTALLED,
+    )
+
+def run_diff(*, root1, root2):
+    left_path = Path(root1)
+    right_path = Path(root2)
 
     if not left_path.exists():
         sys.stderr.write(f"Path does not exist: {left_path}\n")
@@ -546,6 +581,67 @@ def main():
         f"({right_only_paths_count} paths added, {left_only_paths_count} paths removed, "
         f"delta {right_only_paths_count - left_only_paths_count:+d})."
     )
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Nix/NixOS package version diff tool",
+        epilog="See the nvd(1) manual page for more information.",
+    )
+
+    parser.add_argument(
+        "--color",
+        default="auto",
+        help="Controls use of colour; one of 'auto', 'never', 'always'.")
+
+    subparsers = parser.add_subparsers(dest="action")
+
+    diff_parser = subparsers.add_parser(
+        "diff",
+        help="Diff two Nix store paths and their closures.")
+    diff_parser.add_argument(
+        "root1",
+        help="The first Nix store path to compare.")
+    diff_parser.add_argument(
+        "root2",
+        help="The second Nix store path to compare.")
+
+    list_parser = subparsers.add_parser(
+        "list",
+        help="List packages in the closure of a Nix store path.")
+    list_parser.add_argument(
+        "-r", "--root",
+        default="/run/current-system",
+        help="The The Nix store path to work with.")
+    list_parser.add_argument(
+        "-s", "--selected",
+        dest="only_selected",
+        action="store_true",
+        help="Only show selected packages (direct dependencies).")
+    list_parser.add_argument(
+        nargs="*",
+        default=[],
+        dest="name_patterns",
+        help="Patterns (globs) that must all match package names.")
+
+    return parser.parse_args()
+
+def main():
+    global USE_COLOUR
+
+    args = parse_args()
+    action = args.action
+    USE_COLOUR = args.color == "always" or (args.color == "auto" and sys.stdout.isatty())
+    del args.action
+    del args.color
+
+    if action is None:
+        print("nvd: Subcommand required, see 'nvd --help'.")
+        sys.exit(1)
+
+    {
+        "list": run_list,
+        "diff": run_diff,
+    }[action](**vars(args))
 
 # Importing this module is kinda broken because of the constant initializations
 # at the top.

@@ -2,6 +2,10 @@
 
 ## 0.1.0
 
+- Add a mandatory action argument to the CLI.  The existing diff functionality
+  is under the `diff` command.  A new `list` command is now implemented as well
+  (issue #5).
+
 - Optimized first level dependency calculation to read depenencies from
   `nix-store` rather than walking a directory tree manually (issue #4).  This
   also fixes nvd's support for things other than simple `buildEnv`s, e.g. file

@@ -1,28 +1,52 @@
-.TH nvd 1 2021-04-09 nvd "User Commands"
+.TH nvd 1 2021-05-16 nvd "User Commands"
 .SH NAME
 nvd \- Nix/NixOS package version diff tool
 .SH SYNOPSIS
 .P
 .B nvd [ -h | --help ]
 .P
-.B nvd [ --color=(auto|always|never) ] root1 root2
+.B nvd [ --color=(auto|always|never) ] diff
+.I root1
+.I root2
+.P
+.B nvd [ --color=(auto|always|never) ] list
+.RS
+.B [ -r|--root
+.I store-path
+.B ]
+.br
+.B [ -s|--selected ]
+.br
+.B [
+.I name-pattern
+.B ]*
+.RE
 .SH DESCRIPTION
 .P
 .B nvd
-is a tool for diffing the versions of all store paths in the closures of two Nix
-store paths, neatly summarizing the differences.  This is mainly intended for
-comparing two system configurations and is inspired by the output of
+is a tool for working with Nix store paths and their closures, grouped by
+package name, with nice presentation for package versions.  This is mainly
+intended for listing installed packages and comparing two system configurations,
+and is inspired by the output of
 .B emerge -pv
 from Gentoo's Portage package manager.
 .B nvd
 could also be likened to the output of Debian's
+.B apt list -i
+and
 .B apt upgrade -V,
 or any equivalent from other distributions' package managers.
 .B nvd
 isn't limited to comparing system configurations though, and can work with any
 two store paths.
+.P The
+.B diff
+command compares the packages and package versions included in two closures.
+The
+.B list
+command displays the list of packages included in a closure, optionally filtered
+to some criteria.
 .P
-When given two system configurations,
 .B nvd
 distinguishes between packages that are explicitly included in
 .B environment.systemPackages,
@@ -88,14 +112,41 @@ detects whether stdout is a terminal and only uses colour if it is.  Passing
 forces colour to always be used, and passing
 .B never
 forces colour to never be used.
+.TP
+-r|--root <store-path>
+For the
+.B list
+command, this is the root store path to use, or a link to the store path to use.
+.TP
+-s|--selected
+For the
+.B list
+command, only print out selected packages (direct dependencies).
+.TP
+<name-pattern>
+For the
+.B list
+command, only print out names matching all of the given patterns.  The character
+.B ?
+matches exactly one of any character, and the character
+.B *
+matches zero or more of any character.
 .SH OUTPUT
 .P
-The output of
+If the
+.B diff
+command is requested, then the output of
 .B nvd
 displays the given names of the two store paths being compared on the first two
-lines, then changed packages on subsequent lines, one line per package, grouped
-by the type of change.  Newly added or removed packages, packages with version
-or count changes, and packages with selection state changes are displayed.  Hash changes are
+lines.  After this, for both the
+.B diff
+and
+.B list
+commands, package names, versions, and other information is printed out, with
+one line per package name, in lexicographic order.  When producing a diff,
+packages are grouped by the type of change: newly added or removed packages,
+packages with version or count changes, and packages with selection state
+changes.  Hash changes are
 .B not
 considered important, and will not cause a package to be displayed, however
 changes in the number of times a package
@@ -132,6 +183,7 @@ removed, upgraded or downgraded.  The possibilities here are:
 .P
 .RS
 .EX
+I: Installed (no change).
 A: Package is newly added to the closure.
 R: All versions of the package are being removed the closure.
 U: The package is being upgraded.
@@ -140,7 +192,15 @@ C: None of the above apply; unspecified changes.
 .EE
 .RE
 .P
-Packages can be displayed with
+The
+.B list
+command displays only the
+.B I
+state, and the
+.B diff
+command can display all states but the
+.B I
+state.  Packages can be displayed with
 .B C
 install state for a few different reasons, including the number of copies of an
 existing version in the closure changing, or due to the selection state changing
@@ -200,7 +260,7 @@ plus additional versions of some existing packages:
 .P
 .RS
 .EX
-$ nvd /nix/var/nix/profiles/system-{29,30}-link
+$ nvd diff /nix/var/nix/profiles/system-{29,30}-link
 <<< /nix/var/nix/profiles/system-29-link
 >>> /nix/var/nix/profiles/system-30-link
 Version changes:
@@ -232,7 +292,7 @@ have been installed.
 .P
 .RS
 .EX
-$ nvd /nix/var/nix/profiles/system-{33,34}-link
+$ nvd diff /nix/var/nix/profiles/system-{33,34}-link
 <<< /nix/var/nix/profiles/system/system-33-link
 >>> /nix/var/nix/profiles/system/system-34-link
 Version changes:
@@ -263,7 +323,7 @@ one, despite this actually being a newer commit than the old one:
 .P
 .RS
 .EX
-$ nvd /nix/var/nix/profiles/system-{43,44}-link
+$ nvd diff /nix/var/nix/profiles/system-{43,44}-link
 <<< /nix/var/nix/profiles/system/system-43-link
 >>> /nix/var/nix/profiles/system/system-44-link
 Version changes:
@@ -278,7 +338,7 @@ to output no packages at all if no versions have changed:
 .P
 .RS
 .EX
-$ nvd /nix/var/nix/profiles/system-{23,24}-link
+$ nvd diff /nix/var/nix/profiles/system-{23,24}-link
 <<< /nix/var/nix/profiles/system/system-23-link
 >>> /nix/var/nix/profiles/system/system-24-link
 No version or selection state changes.
