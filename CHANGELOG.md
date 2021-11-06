@@ -1,5 +1,7 @@
 # nvd changelog
 
+## 0.1.3 (unreleased)
+
 ## 0.1.2 (2021-11-05)
 
 - Added a flake.nix, thanks @dadada_.
