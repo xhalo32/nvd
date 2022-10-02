@@ -2,6 +2,8 @@
 
 ## 0.1.3 (unreleased)
 
+- Add display of the change in closure disk size (issue #8).
+
 ## 0.1.2 (2021-11-05)
 
 - Added a flake.nix, thanks @dadada_.

@@ -428,6 +428,55 @@ def print_package_list(
         ))
         count += 1
 
+def query_closure_disk_usage_bytes(target: Path) -> Optional[int]:
+    # If we don't add "./" to relative paths, then newer nix will interpret the
+    # argument as something related to flakes instead.
+    target_str = str(target)
+    if not target_str.startswith("/"):
+        target_str = "./" + target_str
+
+    try:
+        stdout = subprocess.run(
+                ["nix", "path-info", "--extra-experimental-features", "nix-command", "--closure-size", target_str],
+                stdout=PIPE,
+                text=True
+        ).stdout
+    except FileNotFoundError:
+        sys.stderr.write("nvd: Couldn't run 'nix path-info --closure-size'.\n")
+        return None
+
+    lines = stdout.rstrip("\n").split("\n")
+    if len(lines) != 1:
+        return None
+
+    words = lines[0].split()
+    return int(words[-1])
+
+BYTES_UNITS = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"]
+
+def render_bytes(bytes_size: int) -> str:
+    scaled_size: Union[int, float] = bytes_size
+    scaled_suffix = "B"
+
+    neg = scaled_size < 0
+    if neg:
+        scaled_size = -scaled_size
+
+    for suffix in BYTES_UNITS:
+        if scaled_size >= 1024:
+            scaled_size /= 1024
+            scaled_suffix = suffix
+        else:
+            break
+
+    if neg:
+        scaled_size = -scaled_size
+
+    if isinstance(scaled_size, int):
+        return f"{scaled_size:+,d}{scaled_suffix}"  # B (bytes).
+    else:
+        return f"{scaled_size:+,.1f}{scaled_suffix}"  # KiB or higher.
+
 def run_list(*, root, only_selected, name_patterns):
     path = Path(root)
 
@@ -581,10 +630,22 @@ def run_diff(*, root1, root2):
     left_only_paths_count = len(left_closure_paths_set - right_closure_paths_set)
     right_only_paths_count = len(right_closure_paths_set - left_closure_paths_set)
 
+    left_closure_disk_usage_bytes: Optional[int] = \
+        query_closure_disk_usage_bytes(left_path)
+    right_closure_disk_usage_bytes: Optional[int] = \
+        query_closure_disk_usage_bytes(right_path)
+
+    if left_closure_disk_usage_bytes is None or right_closure_disk_usage_bytes is None:
+        diff_closure_disk_usage_str = ""
+    else:
+        diff_closure_disk_usage_str = ", disk usage " + \
+            render_bytes(right_closure_disk_usage_bytes - left_closure_disk_usage_bytes)
+
     print(
         f"Closure size: {len(left_closure_paths)} -> {len(right_closure_paths)} "
         f"({right_only_paths_count} paths added, {left_only_paths_count} paths removed, "
-        f"delta {right_only_paths_count - left_only_paths_count:+d})."
+        f"delta {right_only_paths_count - left_only_paths_count:+d}"
+        f"{diff_closure_disk_usage_str})."
     )
 
 def parse_args():
