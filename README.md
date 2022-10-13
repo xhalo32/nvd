@@ -14,6 +14,9 @@ know when versions change.  Usually I care most about packages that are included
 in `environment.systemPackages`, so packages in this list are highlighted and
 coloured specially and changes to this list are reported.
 
+The recommended way to obtain nvd is through Nixpkgs, where it has the attribute
+name `nvd`.
+
 I recommend wrapping your usual `nixos-rebuild` call in a script that compares
 the result to the current system:
 
