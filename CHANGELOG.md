@@ -4,6 +4,9 @@
 
 - Add display of the change in closure disk size (issue #8).
 
+- Add a `--nix-bin-dir` option for allowing easier control over which Nix
+  binaries are used (issue #9).
+
 ## 0.1.2 (2021-11-05)
 
 - Added a flake.nix, thanks @dadada_.

@@ -5,11 +5,11 @@ nvd \- Nix/NixOS package version diff tool
 .P
 .B nvd [ -h | --help ]
 .P
-.B nvd [ --color=(auto|always|never) ] diff
+.B nvd [ GLOBAL OPTIONS ] diff
 .I root1
 .I root2
 .P
-.B nvd [ --color=(auto|always|never) ] list
+.B nvd [ GLOBAL OPTIONS ] list
 .RS
 .B [ -r|--root
 .I store-path
@@ -20,6 +20,14 @@ nvd \- Nix/NixOS package version diff tool
 .B [
 .I name-pattern
 .B ]*
+.RE
+.P
+.B GLOBAL OPTIONS:
+.P
+.RS
+.B [ --color=(auto|always|never) ]
+.br
+.B [ --nix-bin-dir=<path> ]
 .RE
 .SH DESCRIPTION
 .P
@@ -112,6 +120,14 @@ detects whether stdout is a terminal and only uses colour if it is.  Passing
 forces colour to always be used, and passing
 .B never
 forces colour to never be used.
+.TP
+--nix-bin-dir=<path>
+An optional path to a directory containing
+.B nix,
+.B nix-store,
+etc. binaries to use.  If provided, all invocations of Nix binaries will use
+this directory.  If empty or not provided, then invocations of Nix binaries will
+use regular path lookup.  This is the default.
 .TP
 -r|--root <store-path>
 For the

@@ -53,6 +53,7 @@ signal(SIGPIPE, SIG_DFL)  # Python handles SIGPIPE improperly by default.
 
 NVD_VERSION = "0.1.3"
 
+NIX_BIN_DIR = None
 USE_COLOUR = False
 
 SGR_RESET = 0
@@ -229,7 +230,7 @@ class PackageManifest:
     @staticmethod
     def parse_tree(root: Path) -> "PackageManifest":
         direct_deps: List[str] = subprocess.run(
-            ["nix-store", "--query", "--references", str(root)],
+            [make_nix_bin_path("nix-store"), "--query", "--references", str(root)],
             stdout=PIPE,
             text=True
         ).stdout.rstrip("\n").split("\n")
@@ -437,7 +438,11 @@ def query_closure_disk_usage_bytes(target: Path) -> Optional[int]:
 
     try:
         stdout = subprocess.run(
-                ["nix", "path-info", "--extra-experimental-features", "nix-command", "--closure-size", target_str],
+                [
+                    make_nix_bin_path("nix"), "path-info",
+                    "--extra-experimental-features", "nix-command",
+                    "--closure-size", target_str,
+                ],
                 stdout=PIPE,
                 text=True
         ).stdout
@@ -477,6 +482,13 @@ def render_bytes(bytes_size: int) -> str:
     else:
         return f"{scaled_size:+,.1f}{scaled_suffix}"  # KiB or higher.
 
+def make_nix_bin_path(exe_name: str) -> str:
+    global NIX_BIN_DIR
+    if NIX_BIN_DIR:
+        return os.path.join(NIX_BIN_DIR, exe_name)
+    else:
+        return exe_name
+
 def run_list(*, root, only_selected, name_patterns):
     path = Path(root)
 
@@ -491,7 +503,7 @@ def run_list(*, root, only_selected, name_patterns):
         manifest = PackageManifest.parse_tree(path / "sw")
 
     closure_paths: List[str] = subprocess.run(
-        ["nix-store", "-qR", str(path)],
+        [make_nix_bin_path("nix-store"), "-qR", str(path)],
         stdout=PIPE,
         text=True,
     ).stdout.rstrip("\n").split("\n")
@@ -549,12 +561,16 @@ def run_diff(*, root1, root2):
 
     manifest_pair = PackageManifestPair(left_manifest, right_manifest)
 
-    left_closure_paths: List[str] = \
-        subprocess.run(["nix-store", "-qR", str(left_resolved)], stdout=PIPE, text=True) \
-            .stdout.rstrip("\n").split("\n")
-    right_closure_paths: List[str] = \
-        subprocess.run(["nix-store", "-qR", (right_resolved)], stdout=PIPE, text=True) \
-            .stdout.rstrip("\n").split("\n")
+    left_closure_paths: List[str] = subprocess.run(
+        [make_nix_bin_path("nix-store"), "-qR", str(left_resolved)],
+        stdout=PIPE,
+        text=True,
+    ).stdout.rstrip("\n").split("\n")
+    right_closure_paths: List[str] = subprocess.run(
+        [make_nix_bin_path("nix-store"), "-qR", (right_resolved)],
+        stdout=PIPE,
+        text=True,
+    ).stdout.rstrip("\n").split("\n")
 
     # Maps from pname to lists of versions.
     left_closure_map: Dict[str, List[str]] = closure_paths_to_map(left_closure_paths)
@@ -665,6 +681,11 @@ def parse_args():
         default="auto",
         help="Controls use of colour; one of 'auto', 'never', 'always'.")
 
+    parser.add_argument(
+        "--nix-bin-dir",
+        default=None,
+        help="Optional directory containing nix binaries, overrides path lookup.")
+
     subparsers = parser.add_subparsers(dest="action")
 
     diff_parser = subparsers.add_parser(
@@ -698,6 +719,7 @@ def parse_args():
     return parser.parse_args()
 
 def main():
+    global NIX_BIN_DIR
     global USE_COLOUR
     global INST_ADDED
     global INST_REMOVED
@@ -707,8 +729,10 @@ def main():
 
     args = parse_args()
     action = args.action
+    NIX_BIN_DIR = args.nix_bin_dir or None
     USE_COLOUR = args.color == "always" or (args.color == "auto" and sys.stdout.isatty())
     del args.action
+    del args.nix_bin_dir
     del args.color
 
     if USE_COLOUR:
