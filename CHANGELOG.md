@@ -1,6 +1,6 @@
 # nvd changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2022-10-15)
 
 - Add display of the change in closure disk size (issue #8).
 
