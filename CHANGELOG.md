@@ -1,6 +1,6 @@
 # nvd changelog
 
-## 0.1.3 (unreleased)
+## 0.2.0 (unreleased)
 
 - Add display of the change in closure disk size (issue #8).
 
