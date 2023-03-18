@@ -1,6 +1,6 @@
 # nvd changelog
 
-## 0.2.1 (unreleased)
+## 0.2.1 (2023-03-17)
 
 - Fixed reference to undefined variable in `StorePath` constructor (issue #12),
   plus some code lint.
