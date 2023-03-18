@@ -228,11 +228,14 @@ class PackageManifest:
 
     @staticmethod
     def parse_tree(root: Path) -> "PackageManifest":
-        direct_deps: List[str] = subprocess.run(
+        direct_deps_str: str = subprocess.run(
             [make_nix_bin_path("nix-store"), "--query", "--references", str(root)],
             stdout=PIPE,
             text=True
-        ).stdout.rstrip("\n").split("\n")
+        ).stdout.rstrip("\n")
+
+        direct_deps: List[str] = \
+            direct_deps_str.split("\n") if direct_deps_str else []
 
         packages = []
         for dep_path in direct_deps:

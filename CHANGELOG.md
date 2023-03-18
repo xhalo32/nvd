@@ -2,6 +2,10 @@
 
 ## 0.2.2 (unreleased)
 
+- Fixed crash when `nix-store --query --references` returns nothing (e.g. for a
+  Nix package with no dependencies), which causes the assertion from issue #12
+  to fail.
+
 ## 0.2.1 (2023-03-17)
 
 - Fixed reference to undefined variable in `StorePath` constructor (issue #12),
