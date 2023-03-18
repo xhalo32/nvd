@@ -43,7 +43,6 @@ import os.path
 import re
 import subprocess
 import sys
-from collections import namedtuple
 from pathlib import Path
 from signal import SIGPIPE, SIG_DFL, signal
 from subprocess import PIPE
@@ -103,7 +102,7 @@ def raise_arg(e):
 class StorePath:
     def __init__(self, path: Union[str, Path]):
         assert str(path).startswith("/nix/store/"), \
-            f"Doesn't start with /nix/store/: {str(resolved)!r}"
+            f"Doesn't start with /nix/store/: {str(path)!r}"
         self._path = Path(path)
 
     def __str__(self) -> str:
@@ -348,7 +347,7 @@ def render_versions(version_list: List[str], *, colour: bool = False) -> str:
             version_list.pop()
             count += 1
 
-        if version == None:
+        if version is None:
             version = "<none>"
         elif colour:  # (Don't apply colour to <none>.)
             version = sgr(SGR_FG + SGR_YELLOW) + version + sgr(SGR_RESET)

@@ -2,6 +2,9 @@
 
 ## 0.2.1 (unreleased)
 
+- Fixed reference to undefined variable in `StorePath` constructor (issue #12),
+  plus some code lint.
+
 ## 0.2.0 (2022-10-15)
 
 - Add display of the change in closure disk size (issue #8).
