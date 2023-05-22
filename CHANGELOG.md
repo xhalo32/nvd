@@ -1,6 +1,6 @@
 # nvd changelog
 
-## 0.2.2 (unreleased)
+## 0.2.2 (2023-05-22)
 
 - Fixed crash when `nix-store --query --references` returns nothing (e.g. for a
   Nix package with no dependencies), which causes the assertion from issue #12
