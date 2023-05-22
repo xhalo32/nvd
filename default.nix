@@ -4,7 +4,7 @@ let
 in
 stdenv.mkDerivation {
   pname = "nvd";
-  version = "0.2.2";
+  version = "0.2.3";
 
   src = nix-gitignore.gitignoreSourcePure [ ./.gitignore ] ./src;
 

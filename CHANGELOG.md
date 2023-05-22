@@ -1,5 +1,7 @@
 # nvd changelog
 
+## 0.2.3 (unreleased)
+
 ## 0.2.2 (2023-05-22)
 
 - Fixed crash when `nix-store --query --references` returns nothing (e.g. for a

@@ -50,7 +50,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 signal(SIGPIPE, SIG_DFL)  # Python handles SIGPIPE improperly by default.
 
-NVD_VERSION = "0.2.2"
+NVD_VERSION = "0.2.3"
 
 NIX_BIN_DIR = None
 USE_COLOUR = False
