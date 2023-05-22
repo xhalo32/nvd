@@ -1,5 +1,7 @@
 # nvd changelog
 
+## 0.2.4 (unreleased)
+
 ## 0.2.3 (2023-05-22)
 
 - Fix compatibility with nix-2.3 where `nix --extra-experimental-features` isn't
