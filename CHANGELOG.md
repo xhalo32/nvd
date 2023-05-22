@@ -5,6 +5,9 @@
 - Fix compatibility with nix-2.3 where `nix --extra-experimental-features` isn't
   a known flag yet.  We have to switch on the version of Nix we've been given.
 
+- Stricter behaviour around invoking `nix`.  Nix returning a nonzero exit code
+  will cause nvd to abort in most cases.
+
 ## 0.2.2 (2023-05-22)
 
 - Fixed crash when `nix-store --query --references` returns nothing (e.g. for a
