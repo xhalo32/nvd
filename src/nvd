@@ -53,6 +53,7 @@ signal(SIGPIPE, SIG_DFL)  # Python handles SIGPIPE improperly by default.
 NVD_VERSION = "0.2.3"
 
 NIX_BIN_DIR = None
+USE_NIX_COMMAND_FEATURE = False  # Whether to explicitly enable the nix-command feature.
 USE_COLOUR = False
 
 SGR_RESET = 0
@@ -440,13 +441,11 @@ def query_closure_disk_usage_bytes(target: Path) -> Optional[int]:
 
     try:
         stdout = subprocess.run(
-                [
-                    make_nix_bin_path("nix"), "path-info",
-                    "--extra-experimental-features", "nix-command",
-                    "--closure-size", target_str,
-                ],
-                stdout=PIPE,
-                text=True
+            [make_nix_bin_path("nix")]
+            + make_extra_experimental_features_args()
+            + ["path-info", "--closure-size", target_str],
+            stdout=PIPE,
+            text=True
         ).stdout
     except FileNotFoundError:
         sys.stderr.write("nvd: Couldn't run 'nix path-info --closure-size'.\n")
@@ -490,6 +489,32 @@ def make_nix_bin_path(exe_name: str) -> str:
         return os.path.join(NIX_BIN_DIR, exe_name)
     else:
         return exe_name
+
+def make_extra_experimental_features_args() -> List[str]:
+    global USE_NIX_COMMAND_FEATURE
+    if USE_NIX_COMMAND_FEATURE:
+        return ["--extra-experimental-features", "nix-command"]
+    else:
+        return []
+
+def query_nix_version() -> Version:
+    output = subprocess.run(
+        [make_nix_bin_path("nix-build"), "--version"],
+        stdout=PIPE,
+        text=True,
+        check=True,
+    ).stdout
+
+    first_line = output.split("\n", 1)[0]
+
+    words = first_line.split(" ")
+    regex = re.compile(r"^[0-9]+\.[0-9]")
+    for word in words:
+        if regex.search(word):
+            return Version(word)
+
+    raise RuntimeError(
+        "Could not determine Nix version from 'nix-store --version' output: {output!r}")
 
 def run_list(*, root, only_selected, name_patterns):
     path = Path(root)
@@ -722,6 +747,7 @@ def parse_args():
 
 def main():
     global NIX_BIN_DIR
+    global USE_NIX_COMMAND_FEATURE
     global USE_COLOUR
     global INST_ADDED
     global INST_REMOVED
@@ -747,6 +773,11 @@ def main():
     if action is None:
         print("nvd: Subcommand required, see 'nvd --help'.")
         sys.exit(1)
+
+    # Nix 2.4 and later need "experimental-features: nix-command" in order to
+    # use the "nix ..." style commands.
+    if Version("2.4") < query_nix_version():
+        USE_NIX_COMMAND_FEATURE = True
 
     {
         "list": run_list,
