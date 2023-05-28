@@ -2,6 +2,10 @@
 
 ## 0.2.4 (unreleased)
 
+- Respect the `NO_COLOR` environment variable and disable colour when it is set
+  and nonempty (when the default `--color=auto` is used).  For more info see:
+  https://no-color.org
+
 ## 0.2.3 (2023-05-22)
 
 - Fix compatibility with nix-2.3 where `nix --extra-experimental-features` isn't

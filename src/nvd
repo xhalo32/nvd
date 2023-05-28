@@ -764,7 +764,9 @@ def main():
     args = parse_args()
     action = args.action
     NIX_BIN_DIR = args.nix_bin_dir or None
-    USE_COLOUR = args.color == "always" or (args.color == "auto" and sys.stdout.isatty())
+    USE_COLOUR = \
+        args.color == "always" \
+        or (args.color == "auto" and sys.stdout.isatty() and not os.getenv('NO_COLOR'))
     del args.action
     del args.nix_bin_dir
     del args.color
