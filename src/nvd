@@ -68,6 +68,7 @@ SGR_YELLOW = 3
 SGR_BLUE = 4
 SGR_MAGENTA = 5
 SGR_CYAN = 6
+SGR_WHITE = 7
 
 def sgr(*args):
     assert all(isinstance(arg, int) for arg in args), \
@@ -96,6 +97,8 @@ SEL_RIGHT_ONLY_UNSELECTED = "r"
 SEL_NO_MANIFESTS = ""
 
 NIX_STORE_PATH_REGEX = re.compile(r"^/nix/store/[a-z0-9]+-(.+?)(-([0-9].*?))?(\.drv)?$")
+
+ALPHANUM_RE = re.compile(r"\w")  # Alternatively [0-9a-zA-Z] would work.
 
 def raise_arg(e):
     raise e
@@ -312,7 +315,7 @@ class PackageManifestPair:
             self._right_manifest.contains_pname(pname)
         return in_left_manifest != in_right_manifest
 
-def parse_pname_version(path: str) -> Tuple[str, str]:
+def parse_pname_version(path: str) -> Tuple[str, Optional[str]]:
     base_path = str(StorePath(path).to_base_path().path())
 
     match = NIX_STORE_PATH_REGEX.search(base_path)
@@ -323,8 +326,8 @@ def parse_pname_version(path: str) -> Tuple[str, str]:
 
     return pname, version
 
-def closure_paths_to_map(paths: List[str]) -> Dict[str, List[str]]:
-    result = {}
+def closure_paths_to_map(paths: List[str]) -> Dict[str, List[Optional[str]]]:
+    result: Dict[str, List[Optional[str]]] = {}
 
     for path in paths:
         name, version = parse_pname_version(path)
@@ -338,7 +341,12 @@ def closure_paths_to_map(paths: List[str]) -> Dict[str, List[str]]:
 
     return result
 
-def render_versions(version_list: List[str], *, colour: bool = False) -> str:
+def render_versions(
+        version_list: List[Optional[str]],
+        *,
+        colour: bool = False,
+        highlight_from_pos: Optional[int] = None,
+) -> str:
     if version_list == []:
         return "<no versions>"
 
@@ -355,7 +363,15 @@ def render_versions(version_list: List[str], *, colour: bool = False) -> str:
         if version is None:
             version = "<none>"
         elif colour:  # (Don't apply colour to <none>.)
-            version = sgr(SGR_FG + SGR_YELLOW) + version + sgr(SGR_RESET)
+            if highlight_from_pos is None:
+                version = sgr(SGR_FG + SGR_YELLOW) + version + sgr(SGR_RESET)
+            else:
+                version = \
+                    sgr(SGR_FG + SGR_YELLOW) \
+                    + version[0:highlight_from_pos] \
+                    + sgr(SGR_BOLD) \
+                    + version[highlight_from_pos:] \
+                    + sgr(SGR_RESET)
 
         if count == 1:
             items.append(version)
@@ -372,6 +388,7 @@ def print_package_list(
         left_versions_map: Dict[str, List[str]],
         right_versions_map: Optional[Dict[str, List[str]]] = None,
         fixed_install_state: Optional[str] = None,
+        no_version_suffix_highlight: bool = False,
 ):
     assert (right_versions_map is None) != (fixed_install_state is None), \
         "Expect either one versions map, or a fixed install state."
@@ -418,6 +435,15 @@ def print_package_list(
             bold_if_selected_sgr = ""
             pname_sgr = bold_if_selected_sgr + sgr(SGR_FG + SGR_GREEN)
 
+        versions_common_prefix_len: Optional[int]
+        if have_single_version or no_version_suffix_highlight:
+            versions_common_prefix_len = None
+        else:
+            versions_common_prefix_len = find_common_version_prefix_lists(
+                [x for x in left_versions if x is not None],
+                [x for x in right_versions if x is not None],
+            )
+
         status_str = "[{}{}]".format(
             bold_if_selected_sgr + install_state_str + sgr(SGR_RESET),
             pname_sgr + manifest_pair.get_selection_state(pname) + sgr(SGR_RESET),
@@ -428,10 +454,65 @@ def print_package_list(
             status_str,
             count_str,
             pname_sgr + pname_str + sgr(SGR_RESET),
-            render_versions(left_versions, colour=True),
-            "" if have_single_version else (" -> " + render_versions(right_versions, colour=True)),
+            render_versions(
+                left_versions,
+                colour=True,
+                highlight_from_pos=versions_common_prefix_len,
+            ),
+            "" if have_single_version else (
+                " -> " + render_versions(
+                    right_versions,
+                    colour=True,
+                    highlight_from_pos=versions_common_prefix_len,
+                )
+            ),
         ))
         count += 1
+
+def find_common_version_prefix(x: str, y: str, limit: Optional[int]) -> int:
+    i = 0
+    x_len = len(x)
+    y_len = len(y)
+
+    while (
+            (limit is None or i < limit)
+            and i < x_len
+            and i < y_len
+            and x[i] == y[i]
+    ):
+        i += 1
+
+    return i
+
+def find_common_version_prefix_lists(*lsts: List[str]) -> int:
+    first = True
+    i: int = 0
+    target: str
+
+    for lst in lsts:
+        for x in lst:
+            if first:
+                target = x
+                i = len(x)
+                first = False
+            else:
+                i = find_common_version_prefix(target, x, i)
+
+            if i == 0:
+                return 0
+
+    # Rewind to the start of the current alphanumeric span of characters.  It
+    # looks weird to show e.g. "1.15 -> 1.17" with only the 5 and 7 highlighted.
+    # It's nicer to highlight 15 and 17.
+    #
+    # It might also make sense to rewind from the middle of a number, or from
+    # the middle of a word, but *not* cross over from a word to a number or vice
+    # versa.
+    if not first and i < len(target) and i > 0 and ALPHANUM_RE.fullmatch(target[i]):
+        while i > 0 and ALPHANUM_RE.fullmatch(target[i - 1]):
+            i -= 1
+
+    return i
 
 def query_closure_disk_usage_bytes(target: Path) -> Optional[int]:
     # If we don't add "./" to relative paths, then newer nix will interpret the
@@ -562,7 +643,12 @@ def run_list(*, root, only_selected, name_patterns):
         fixed_install_state=INST_INSTALLED,
     )
 
-def run_diff(*, root1, root2):
+def run_diff(
+        *,
+        root1,
+        root2,
+        no_version_suffix_highlight: bool,
+):
     left_path = Path(root1)
     right_path = Path(root2)
 
@@ -606,8 +692,8 @@ def run_diff(*, root1, root2):
     ).stdout.rstrip("\n").split("\n")
 
     # Maps from pname to lists of versions.
-    left_closure_map: Dict[str, List[str]] = closure_paths_to_map(left_closure_paths)
-    right_closure_map: Dict[str, List[str]] = closure_paths_to_map(right_closure_paths)
+    left_closure_map: Dict[str, List[Optional[str]]] = closure_paths_to_map(left_closure_paths)
+    right_closure_map: Dict[str, List[Optional[str]]] = closure_paths_to_map(right_closure_paths)
 
     left_package_names = set(left_closure_map.keys())
     right_package_names = set(right_closure_map.keys())
@@ -636,6 +722,7 @@ def run_diff(*, root1, root2):
             manifest_pair=manifest_pair,
             left_versions_map=left_closure_map,
             right_versions_map=right_closure_map,
+            no_version_suffix_highlight=no_version_suffix_highlight,
         )
 
     # Announce specific changes for packages whose versions haven't changed.
@@ -724,6 +811,10 @@ def parse_args():
     diff_parser = subparsers.add_parser(
         "diff",
         help="Diff two Nix store paths and their closures.")
+    diff_parser.add_argument(
+        "--no-version-suffix-highlight",
+        action="store_true",
+        help="Disable highlighting of the changed portions of versions.")
     diff_parser.add_argument(
         "root1",
         help="The first Nix store path to compare.")
