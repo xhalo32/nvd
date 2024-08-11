@@ -33,6 +33,19 @@ nvd \- Nix/NixOS package version diff tool
 .B ]*
 .RE
 .P
+.B nvd [ GLOBAL OPTIONS ] history
+.RS
+.B [ -p|--profile
+.I profile
+.B ]
+.br
+.B [ -m|--minimum-version
+.I version
+.B ]
+.br
+.B [ --list-oldest ]
+.RE
+.P
 .B GLOBAL OPTIONS:
 .P
 .RS
@@ -66,6 +79,10 @@ The
 .B list
 command displays the list of packages included in a closure, optionally filtered
 to some criteria.
+The
+.B history
+command displays the difference between each generation of a profile, optionally
+also listing the packages included in the oldest generation.
 .P
 .B nvd
 distinguishes between packages that are explicitly included in
@@ -169,17 +186,56 @@ command, only print out names matching all of the given patterns.  The character
 matches exactly one of any character, and the character
 .B *
 matches zero or more of any character.
+.TP
+-p|--profile <profile>
+For the
+.B history
+command, this is the profile to use. It must be the path of a versioned profile
+symlink or a symlink to such a path. Valid examples include:
+.br
+	-
+.B
+/nix/var/nix/profiles/system
+(the default)
+.br
+	- /nix/var/nix/profiles/system-1-link
+.br
+	- /nix/var/nix/profiles/default
+.br
+	- ~/.nix-profile
+.br
+	- ~/.local/state/nix/profiles/profile
+.br
+	- /nix/var/nix/profiles/per-user/myself/profile
+.br
+The default is the system profile, which will fail on most non-NixOS systems.
+.TP
+-m|--minimum-version <version>
+For the
+.B history
+command, the first version from which to start comparing generations. Must be
+an integer.
+.TP
+--list-oldest
+For the
+.B history
+command, also list the packages included in the oldest generation. They are
+omitted by default.
 .SH OUTPUT
 .P
 If the
 .B diff
-command is requested, then the output of
+or
+.B history
+commands are requested, then the output of
 .B nvd
 displays the given names of the two store paths being compared on the first two
-lines.  After this, for both the
+lines.  After this, for the
 .B diff
-and
+,
 .B list
+, and
+.B history
 commands, package names, versions, and other information is printed out, with
 one line per package name, in lexicographic order.  When producing a diff,
 packages are grouped by the type of change: newly added or removed packages,
@@ -199,6 +255,15 @@ The first two lines of output display the paths being compared:
 >>> /nix/var/nix/profiles/system-2-link
 .EE
 .RE
+The
+.B history
+command also displays the generation number of the profile and shows the
+absolute paths of the two generations it is comparing:
+.RS
+.EX
+--- Version 23:
+<<< /nix/store/3j30bacl8zsfhg317bv7ig985y8jd5k2-nixos-system-hostname-24.05
+>>> /nix/store/vsjs7p1cc0qwhqaiqk16p0limjs1smpv-nixos-system-hostname-24.05
 .P
 After this, packages are listed.  Each package is displayed on a line like the
 following.
@@ -238,7 +303,15 @@ state, and the
 .B diff
 command can display all states but the
 .B I
-state.  Packages can be displayed with
+state.  The
+.B history
+command only displays the same states as
+.B diff
+by default, but can also display the
+.B I
+state when
+.B --list-oldest
+is passed.  Packages can be displayed with
 .B C
 install state for a few different reasons, including the number of copies of an
 existing version in the closure changing, or due to the selection state changing

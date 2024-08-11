@@ -3,6 +3,7 @@
 # nvd - Nix/NixOS package version diff tool
 #
 # Copyright 2021-2024 Bryan Gardiner <bog@khumba.net>
+# Copyright 2024 Felix Uhl <nvd@mail.felix-uhl.de>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,17 +39,18 @@
 
 import argparse
 import fnmatch
+from itertools import pairwise
 import os
 import os.path
 import re
 import subprocess
 import sys
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from functools import cmp_to_key, total_ordering
 from pathlib import Path
 from signal import SIGPIPE, SIG_DFL, signal
 from subprocess import PIPE
-from typing import Any, Iterable, Optional, Union
+from typing import Iterable, List, Optional, Union
 
 signal(SIGPIPE, SIG_DFL)  # Python handles SIGPIPE improperly by default.
 
@@ -99,11 +101,38 @@ SEL_RIGHT_ONLY_UNSELECTED = "r"
 SEL_NO_SELECTED_SETS = ""
 
 NIX_STORE_PATH_REGEX = re.compile(r"^/nix/store/[a-z0-9]+-(.+?)(-([0-9].*?))?(\.drv)?$")
+PROFILE_LINK_REGEX = re.compile(r"^(?P<profile>.+)-(?P<version>[0-9]+)-link$")
 
 ALPHANUM_RE = re.compile(r"\w")  # Alternatively [0-9a-zA-Z] would work.
 
 def raise_arg(e):
     raise e
+
+@total_ordering
+class ProfileVersion:
+    def __init__(self, path: Path):
+        match = PROFILE_LINK_REGEX.match(str(path))
+        assert match is not None, f"Couldn't parse profile link: {path}"
+        self._path = path.resolve()
+        self._version = int(match.group("version"))
+
+    def __lt__(self, other):
+        if not isinstance(other, ProfileVersion):
+            return NotImplemented
+
+        return self._version < other._version
+
+    def __eq__(self, other):
+        if not isinstance(other, ProfileVersion):
+            return NotImplemented
+        
+        return self._version == other._version and self._path == other._path
+
+    def path(self):
+        return self._path
+
+    def version(self):
+        return self._version
 
 class StorePath:
     def __init__(self, path: Union[str, Path]):
@@ -753,6 +782,50 @@ def query_nix_version() -> Version:
     raise RuntimeError(
         "Could not determine Nix version from 'nix-store --version' output: {output!r}")
 
+def read_symlink_chain(start_path: Path) -> List[Path]:
+    link_chain = [start_path]
+
+    current_path = start_path
+    while True:
+        try:
+            link_target = current_path.readlink()
+        # If path does not exist or is not a symlink, we've reached the end of the chain
+        except (FileNotFoundError, OSError):
+            break
+
+        if link_target in link_chain:
+            raise RuntimeError(f"Symlink loop detected: {link_chain} -> {link_target}")
+
+        if not link_target.is_absolute():
+            link_target = (current_path.parent / link_target)
+
+        link_chain.append(link_target)
+        current_path = link_target
+
+    return link_chain
+
+def is_profile_link(path: Path) -> bool:
+    match = PROFILE_LINK_REGEX.match(str(path))
+    return match is not None
+
+def is_link_to_profile(path: Path, profile_name: str) -> bool:
+    match = PROFILE_LINK_REGEX.match(str(path))
+    return match is not None and match.group("profile") == profile_name
+
+def make_profile_generation_list(profile_link: Path, minimum_version: int) -> List[ProfileVersion]:
+    profile_name = PROFILE_LINK_REGEX.match(str(profile_link)).group("profile")
+    all_profile_links = [l for l in profile_link.parent.iterdir() if is_link_to_profile(l, profile_name)]
+    all_profile_versions = [ProfileVersion(l) for l in all_profile_links]
+    all_profile_versions.sort()
+    profile_versions = [pv for pv in all_profile_versions if pv.version() >= minimum_version]
+
+    if len(profile_versions) < 1:
+        sys.stderr.write(f"Profile {profile_name} has no versions >= {minimum_version}.\n")
+        sys.stderr.write(f"Available versions: {[pv.version() for pv in all_profile_versions]}\n")
+        sys.exit(1)
+
+    return profile_versions
+
 def run_list(
     *,
     root,
@@ -928,6 +1001,56 @@ def run_diff(
         f"{diff_closure_disk_usage_str})."
     )
 
+def run_history(
+        *,
+        profile,
+        minimum_version: int,
+        list_oldest: bool,
+        no_version_suffix_highlight: bool,
+        sort_comparator: PackageListEntryComparator,
+):
+    profile_path = Path(profile)
+
+    if not profile_path.exists():
+        sys.stderr.write(f"Path does not exist: {profile_path}\n")
+        sys.stderr.write("On non-NixOS systems, try:\nnvd history --profile ~/.nix-profile\n")
+        sys.exit(1)
+
+    symlink_chain = read_symlink_chain(profile_path)
+
+    active_profile_links = [l for l in symlink_chain if is_profile_link(l)]
+
+    if len(active_profile_links) < 1:
+        sys.stderr.write(f"No versioned profile link found in chain: {[str(l) for l in symlink_chain]}\n")
+        sys.exit(1)
+
+    all_profiles = make_profile_generation_list(active_profile_links[0], minimum_version)
+
+    # Show list of packages in the oldest profile if desired.
+    oldest_profile = all_profiles[0]
+
+    if list_oldest:
+        print(f"--- Version {oldest_profile.version()}:")
+        print(f">>> {oldest_profile.path()}")
+        run_list(
+            root=oldest_profile.path(),
+            only_selected=False,
+            name_patterns=[],
+            sort_comparator=sort_comparator
+        )
+    else:
+        print(f"Contents of profile version {oldest_profile.version()} were omitted, use --list-oldest to show them.")
+    
+    # Show diff between all profiles.
+    for [base_profile, displayed_profile] in pairwise(all_profiles):
+        print(f"\n--- Version {displayed_profile.version()}:")
+        run_diff(
+            root1=base_profile.path(),
+            root2=displayed_profile.path(),
+            no_version_suffix_highlight=no_version_suffix_highlight,
+            sort_comparator=sort_comparator,
+        )
+
 def parse_args():
     def add_sort_arg(p: argparse.ArgumentParser) -> None:
         p.add_argument(
@@ -993,6 +1116,30 @@ def parse_args():
         dest="name_patterns",
         help="Patterns (globs) that must all match package names.")
 
+    history_parser = subparsers.add_parser(
+        "history",
+        help="Show the history of a Nix profile.")
+    add_sort_arg(history_parser)
+    history_parser.add_argument(
+        "-p", "--profile",
+        default="/nix/var/nix/profiles/system",
+        help="The Nix profile to work with.")
+    history_parser.add_argument(
+        "-m", "--minimum-version",
+        # link 0 doesn't exist, but might become the "initial" empty state in the future.
+        default=1,
+        type=int,
+        help="Minimum version of this profile to display.")
+    history_parser.add_argument(
+        "--list-oldest",
+        action="store_true",
+        help="Additionally list all packages in the first displayed profile."
+    )
+    history_parser.add_argument(
+        "--no-version-suffix-highlight",
+        action="store_true",
+        help="Disable highlighting of the changed portions of versions.")
+
     return parser.parse_args()
 
 def main():
@@ -1038,6 +1185,7 @@ def main():
     {
         "list": run_list,
         "diff": run_diff,
+        "history": run_history,
     }[action](**args)
 
 # Importing this module is kinda broken because of the constant initializations
