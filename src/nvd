@@ -542,9 +542,9 @@ def render_versions(
     items.reverse()
     return ", ".join(items)
 
-def print_package_list(
+def print_packages(
         *,
-        pnames: list[str],
+        pnames: Iterable[str],
         sort_comparator: Optional[PackageListEntryComparator],
         selected_sets: PackageSetPair,
         left_package_set: PackageSet,
@@ -843,7 +843,7 @@ def run_list(
     if (path / "sw").is_dir():
         selected_set = PackageSet.from_direct_dependencies((path / "sw").resolve())
     else:
-        selected_set = PackageSet.from_direct_dependencies(path / "sw")
+        selected_set = PackageSet.from_direct_dependencies(path)
 
     closure_set = PackageSet.from_closure(path)
 
@@ -860,7 +860,7 @@ def run_list(
 
     target_pnames.sort()
 
-    print_package_list(
+    print_packages(
         pnames=target_pnames,
         selected_sets=PackageSetPair(selected_set, selected_set),
         left_package_set=closure_set,
@@ -875,6 +875,7 @@ def run_diff(
         root2,
         no_version_suffix_highlight: bool,
         sort_comparator: PackageListEntryComparator,
+        only_selected: bool,
 ):
     left_path = Path(root1)
     right_path = Path(root2)
@@ -908,29 +909,41 @@ def run_diff(
     left_closure_set = PackageSet.from_closure(left_resolved)
     right_closure_set = PackageSet.from_closure(right_resolved)
 
-    left_package_names = set(left_closure_set.all_pnames())
-    right_package_names = set(right_closure_set.all_pnames())
+    left_closure_all_package_names = set(left_closure_set.all_pnames())
+    right_closure_all_package_names = set(right_closure_set.all_pnames())
 
-    common_package_names = left_package_names & right_package_names
-    left_only_package_names = left_package_names - right_package_names
-    right_only_package_names = right_package_names - left_package_names
+    left_selected_package_names = set(left_selected_set.all_pnames())
+    right_selected_package_names = set(right_selected_set.all_pnames())
 
-    # Announce version changes.
+    # Compute changes to versions and selection states.
+    pnames_selected_in_either_closure = left_selected_package_names | right_selected_package_names
+    pnames_in_both_closures = left_closure_all_package_names & right_closure_all_package_names
+
     package_names_with_changed_versions = []
     package_names_with_changed_selection_states = []
-    for pname in common_package_names:
+    for pname in pnames_in_both_closures:
+        if only_selected and pname not in pnames_selected_in_either_closure:
+            continue
+
         if left_closure_set.get_pname_versions(pname) != right_closure_set.get_pname_versions(pname):
             package_names_with_changed_versions.append(pname)
         elif selected_sets.is_selection_state_changed(pname):
             package_names_with_changed_selection_states.append(pname)
 
+    # Compute added and removed packages.
+    added_package_names = right_closure_all_package_names - left_closure_all_package_names
+    removed_package_names = left_closure_all_package_names - right_closure_all_package_names
+    if only_selected:
+        added_package_names &= pnames_selected_in_either_closure
+        removed_package_names &= pnames_selected_in_either_closure
+
     any_changes_displayed = False
 
     # Announce version changes.
-    if package_names_with_changed_versions != []:
+    if package_names_with_changed_versions:
         any_changes_displayed = True
         print("Version changes:")
-        print_package_list(
+        print_packages(
             pnames=package_names_with_changed_versions,
             selected_sets=selected_sets,
             left_package_set=left_closure_set,
@@ -940,10 +953,10 @@ def run_diff(
         )
 
     # Announce specific changes for packages whose versions haven't changed.
-    if package_names_with_changed_selection_states != []:
+    if package_names_with_changed_selection_states:
         any_changes_displayed = True
         print("Selection state changes:")
-        print_package_list(
+        print_packages(
             pnames=package_names_with_changed_selection_states,
             selected_sets=selected_sets,
             left_package_set=left_closure_set,
@@ -952,11 +965,11 @@ def run_diff(
         )
 
     # Announce added packages.
-    if right_only_package_names != []:
+    if added_package_names:
         any_changes_displayed = True
         print("Added packages:")
-        print_package_list(
-            pnames=right_only_package_names,
+        print_packages(
+            pnames=added_package_names,
             selected_sets=selected_sets,
             left_package_set=right_closure_set,  # Yes, this is correct.
             fixed_install_state=INST_ADDED,
@@ -964,11 +977,11 @@ def run_diff(
         )
 
     # Announce removed packages.
-    if left_only_package_names != []:
+    if removed_package_names:
         any_changes_displayed = True
         print("Removed packages:")
-        print_package_list(
-            pnames=left_only_package_names,
+        print_packages(
+            pnames=removed_package_names,
             selected_sets=selected_sets,
             left_package_set=left_closure_set,
             fixed_install_state=INST_REMOVED,
@@ -1008,6 +1021,7 @@ def run_history(
         list_oldest: bool,
         no_version_suffix_highlight: bool,
         sort_comparator: PackageListEntryComparator,
+        only_selected: bool,
 ):
     profile_path = Path(profile)
 
@@ -1034,7 +1048,7 @@ def run_history(
         print(f">>> {oldest_profile.path()}")
         run_list(
             root=oldest_profile.path(),
-            only_selected=False,
+            only_selected=only_selected,
             name_patterns=[],
             sort_comparator=sort_comparator
         )
@@ -1049,9 +1063,17 @@ def run_history(
             root2=displayed_profile.path(),
             no_version_suffix_highlight=no_version_suffix_highlight,
             sort_comparator=sort_comparator,
+            only_selected=only_selected,
         )
 
 def parse_args():
+    def add_selected_arg(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "-s", "--selected",
+            dest="only_selected",
+            action="store_true",
+            help="Only show selected packages (direct dependencies).")
+
     def add_sort_arg(p: argparse.ArgumentParser) -> None:
         p.add_argument(
             "--sort",
@@ -1085,6 +1107,7 @@ def parse_args():
     diff_parser = subparsers.add_parser(
         "diff",
         help="Diff two Nix store paths and their closures.")
+    add_selected_arg(diff_parser)
     add_sort_arg(diff_parser)
     diff_parser.add_argument(
         "--no-version-suffix-highlight",
@@ -1100,16 +1123,12 @@ def parse_args():
     list_parser = subparsers.add_parser(
         "list",
         help="List packages in the closure of a Nix store path.")
+    add_selected_arg(list_parser)
     add_sort_arg(list_parser)
     list_parser.add_argument(
         "-r", "--root",
         default="/run/current-system",
         help="The The Nix store path to work with.")
-    list_parser.add_argument(
-        "-s", "--selected",
-        dest="only_selected",
-        action="store_true",
-        help="Only show selected packages (direct dependencies).")
     list_parser.add_argument(
         nargs="*",
         default=[],
@@ -1119,6 +1138,7 @@ def parse_args():
     history_parser = subparsers.add_parser(
         "history",
         help="Show the history of a Nix profile.")
+    add_selected_arg(history_parser)
     add_sort_arg(history_parser)
     history_parser.add_argument(
         "-p", "--profile",

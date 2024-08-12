@@ -7,6 +7,8 @@ nvd \- Nix/NixOS package version diff tool
 .P
 .B nvd [ GLOBAL OPTIONS ] diff
 .RS
+.B [ -s|--selected ]
+.br
 .B [ --sort
 .I sort-order
 .B ]
@@ -37,6 +39,11 @@ nvd \- Nix/NixOS package version diff tool
 .RS
 .B [ -p|--profile
 .I profile
+.br
+.B [ -s|--selected ]
+.br
+.B [ --sort
+.I sort-order
 .B ]
 .br
 .B [ -m|--minimum-version
@@ -158,6 +165,9 @@ etc. binaries to use.  If provided, all invocations of Nix binaries will use
 this directory.  If empty or not provided, then invocations of Nix binaries will
 use regular path lookup.  This is the default.
 .TP
+-s|--selected
+Only print out selected packages (direct dependencies).
+.TP
 --sort=<sort-order>
 Specifies the order to use to sort package lists.  The argument is a
 comma-separted list of keywords indicating which properties to sort on.  The
@@ -172,11 +182,6 @@ which sorts by package name.  Currently only this keyword is supported.
 For the
 .B list
 command, this is the root store path to use, or a link to the store path to use.
-.TP
--s|--selected
-For the
-.B list
-command, only print out selected packages (direct dependencies).
 .TP
 <name-pattern>
 For the
