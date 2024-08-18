@@ -106,6 +106,8 @@ PROFILE_LINK_REGEX = re.compile(r"^(?P<profile>.+)-(?P<version>[0-9]+)-link$")
 
 ALPHANUM_RE = re.compile(r"\w")  # Alternatively [0-9a-zA-Z] would work.
 
+DIGIT_RE = re.compile("[0-9]")
+
 def raise_arg(e):
     raise e
 
@@ -688,12 +690,24 @@ def find_common_version_prefix_lists(*lsts: list[str]) -> int:
     # looks weird to show e.g. "1.15 -> 1.17" with only the 5 and 7 highlighted.
     # It's nicer to highlight 15 and 17.
     #
-    # It might also make sense to rewind from the middle of a number, or from
-    # the middle of a word, but *not* cross over from a word to a number or vice
-    # versa.
+    # Also, we want to rewind from the middle of a number but stop if we reach
+    # the end of a preceeding word, or vice versa.  For example, with
+    # "1.9.15p2 -> 1.9.15p5", we should just highlight the final digit, not the
+    # common "15p" part.  This is consistent with Nix treating numbers and
+    # letters as separate chunks.
     if not first and i < len(target) and i > 0 and ALPHANUM_RE.fullmatch(target[i]):
-        while i > 0 and ALPHANUM_RE.fullmatch(target[i - 1]):
-            i -= 1
+        if DIGIT_RE.fullmatch(target[i]):
+            # Rewind only through digits.
+            while i > 0 and DIGIT_RE.fullmatch(target[i - 1]):
+                i -= 1
+        else:
+            # Rewind only through letters.
+            while (
+                i > 0
+                and ALPHANUM_RE.fullmatch(target[i - 1])
+                and not DIGIT_RE.fullmatch(target[i - 1])
+            ):
+                i -= 1
 
     return i
 
