@@ -125,7 +125,7 @@ class StorePath:
         return StorePath(os.path.join(*self._path.parts[0:4]))
 
 # For the version comparison algorithm, see:
-# https://nixos.org/manual/nix/stable/#ssec-version-comparisons
+# https://nix.dev/manual/nix/stable/command-ref/nix-env/upgrade#versions
 
 class VersionChunk:
     def __init__(self, chunk_value: Union[int, str]):
