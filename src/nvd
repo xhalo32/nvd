@@ -31,10 +31,10 @@
 # -: Package is newly unselected.
 # *: Package is selected; state unchanged.
 # .: Not in environment.systemPackages; dependency.
-# l: Package manifest only available on the left; not selected there.
-# L: Package manifest only available on the left; selected there.
-# r: Package manifest only available on the right; not selected there.
-# R: Package manifest only available on the right; selected there.
+# l: Selected package set only available on the left; not selected there.
+# L: Selected package set only available on the left; selected there.
+# r: Selected package set only available on the right; not selected there.
+# R: Selected package set only available on the right; selected there.
 
 import argparse
 import fnmatch
@@ -89,13 +89,13 @@ SEL_SELECTED = "*"
 SEL_UNSELECTED = "."
 SEL_NEWLY_SELECTED = "+"
 SEL_NEWLY_UNSELECTED = "-"
-# There's no way to reach these selection states currently, since manifests are
-# always computed.
+# There's no way to reach these selection states currently, since selected sets
+# are always computed.
 SEL_LEFT_ONLY_SELECTED = "L"
 SEL_LEFT_ONLY_UNSELECTED = "l"
 SEL_RIGHT_ONLY_SELECTED = "R"
 SEL_RIGHT_ONLY_UNSELECTED = "r"
-SEL_NO_MANIFESTS = ""
+SEL_NO_SELECTED_SETS = ""
 
 NIX_STORE_PATH_REGEX = re.compile(r"^/nix/store/[a-z0-9]+-(.+?)(-([0-9].*?))?(\.drv)?$")
 
@@ -222,7 +222,7 @@ class Package:
     def store_path(self) -> StorePath:
         return self._store_path
 
-class PackageManifest:
+class PackageSet:
     def __init__(self, packages: List[Package]):
         assert isinstance(packages, List)
         assert all(isinstance(package, Package) for package in packages)
@@ -234,27 +234,31 @@ class PackageManifest:
             self._packages_by_pname.setdefault(entry.pname(), []).append(entry)
 
     @staticmethod
-    def parse_tree(root: Path) -> "PackageManifest":
-        direct_deps_str: str = subprocess.run(
-            [make_nix_bin_path("nix-store"), "--query", "--references", str(root)],
+    def from_direct_dependencies(path: Path) -> "PackageSet":
+        return PackageSet.from_nix_query(["--references", str(path)])
+
+    @staticmethod
+    def from_nix_query(nix_query_args: List[str]) -> "PackageSet":
+        result_paths_str: str = subprocess.run(
+            [make_nix_bin_path("nix-store"), "--query"] + nix_query_args,
             stdout=PIPE,
             text=True,
             check=True,
         ).stdout.rstrip("\n")
 
-        direct_deps: List[str] = \
-            direct_deps_str.split("\n") if direct_deps_str else []
+        result_paths: List[str] = \
+            result_paths_str.split("\n") if result_paths_str else []
 
         packages = []
-        for dep_path in direct_deps:
-            pname, version = parse_pname_version(dep_path)
+        for result_path in result_paths:
+            pname, version = parse_pname_version(result_path)
             packages.append(Package(
                 pname=pname,
                 version=Version(version),
-                store_path=StorePath(dep_path),
+                store_path=StorePath(result_path),
             ))
 
-        return PackageManifest(packages)
+        return PackageSet(packages)
 
     def contains_pname(self, pname: str) -> bool:
         return pname in self._packages_by_pname
@@ -262,61 +266,61 @@ class PackageManifest:
     def all_pnames(self):
         return self._packages_by_pname.keys()
 
-class PackageManifestPair:
+class PackageSetPair:
     def __init__(
             self,
-            left_manifest: Optional[PackageManifest],
-            right_manifest: Optional[PackageManifest]
+            left_set: Optional[PackageSet],
+            right_set: Optional[PackageSet]
     ):
-        assert left_manifest is None or isinstance(left_manifest, PackageManifest)
-        assert right_manifest is None or isinstance(right_manifest, PackageManifest)
-        self._left_manifest = left_manifest
-        self._right_manifest = right_manifest
+        assert left_set is None or isinstance(left_set, PackageSet)
+        assert right_set is None or isinstance(right_set, PackageSet)
+        self._left_set = left_set
+        self._right_set = right_set
 
-    def get_left_manifest(self) -> Optional[PackageManifest]:
-        return self._left_manifest
+    def get_left_set(self) -> Optional[PackageSet]:
+        return self._left_set
 
-    def get_right_manifest(self) -> Optional[PackageManifest]:
-        return self._right_manifest
+    def get_right_set(self) -> Optional[PackageSet]:
+        return self._right_set
 
     def get_selection_state(self, pname: str) -> str:
-        left_manifest = self._left_manifest
-        right_manifest = self._right_manifest
+        left_set = self._left_set
+        right_set = self._right_set
 
-        if left_manifest is not None and right_manifest is not None:
-            in_left_manifest = left_manifest.contains_pname(pname)
-            in_right_manifest = right_manifest.contains_pname(pname)
+        if left_set is not None and right_set is not None:
+            in_left_set = left_set.contains_pname(pname)
+            in_right_set = right_set.contains_pname(pname)
             selection_state_str = [
                 SEL_UNSELECTED,
                 SEL_NEWLY_UNSELECTED,
                 SEL_NEWLY_SELECTED,
                 SEL_SELECTED,
-            ][int(in_left_manifest) + 2 * int(in_right_manifest)]
-        elif left_manifest is not None:
-            in_left_manifest = left_manifest.contains_pname(pname)
+            ][int(in_left_set) + 2 * int(in_right_set)]
+        elif left_set is not None:
+            in_left_set = left_set.contains_pname(pname)
             selection_state_str = [
                 SEL_LEFT_ONLY_UNSELECTED,
                 SEL_LEFT_ONLY_SELECTED,
-            ][int(in_left_manifest)]
-        elif right_manifest is not None:
-            in_right_manifest = right_manifest.contains_pname(pname)
+            ][int(in_left_set)]
+        elif right_set is not None:
+            in_right_set = right_set.contains_pname(pname)
             selection_state_str = [
                 SEL_RIGHT_ONLY_UNSELECTED,
                 SEL_RIGHT_ONLY_SELECTED,
-            ][int(in_right_manifest)]
+            ][int(in_right_set)]
         else:
-            selection_state_str = SEL_NO_MANIFESTS
+            selection_state_str = SEL_NO_SELECTED_SETS
 
         return selection_state_str
 
     def is_selection_state_changed(self, pname: str) -> str:
-        in_left_manifest = \
-            self._left_manifest is not None and \
-            self._left_manifest.contains_pname(pname)
-        in_right_manifest = \
-            self._right_manifest is not None and \
-            self._right_manifest.contains_pname(pname)
-        return in_left_manifest != in_right_manifest
+        in_left_set = \
+            self._left_set is not None and \
+            self._left_set.contains_pname(pname)
+        in_right_set = \
+            self._right_set is not None and \
+            self._right_set.contains_pname(pname)
+        return in_left_set != in_right_set
 
 def parse_pname_version(path: str) -> Tuple[str, Optional[str]]:
     base_path = str(StorePath(path).to_base_path().path())
@@ -387,7 +391,7 @@ def render_versions(
 def print_package_list(
         *,
         pnames: List[str],
-        manifest_pair: PackageManifestPair,
+        selected_sets: PackageSetPair,
         left_versions_map: Dict[str, List[str]],
         right_versions_map: Optional[Dict[str, List[str]]] = None,
         fixed_install_state: Optional[str] = None,
@@ -425,11 +429,11 @@ def print_package_list(
                 install_state_str = INST_CHANGED
 
         selected_at_all = (
-            manifest_pair.get_left_manifest() is not None
-            and manifest_pair.get_left_manifest().contains_pname(pname)
+            selected_sets.get_left_set() is not None
+            and selected_sets.get_left_set().contains_pname(pname)
         ) or (
-            manifest_pair.get_right_manifest() is not None
-            and manifest_pair.get_right_manifest().contains_pname(pname)
+            selected_sets.get_right_set() is not None
+            and selected_sets.get_right_set().contains_pname(pname)
         )
         if selected_at_all:
             bold_if_selected_sgr = sgr(SGR_BOLD)
@@ -449,7 +453,7 @@ def print_package_list(
 
         status_str = "[{}{}]".format(
             bold_if_selected_sgr + install_state_str + sgr(SGR_RESET),
-            pname_sgr + manifest_pair.get_selection_state(pname) + sgr(SGR_RESET),
+            pname_sgr + selected_sets.get_selection_state(pname) + sgr(SGR_RESET),
         )
         count_str = count_format_str.format(count)
         pname_str = pname_format_str.format(pname)
@@ -612,9 +616,9 @@ def run_list(*, root, only_selected, name_patterns):
 
     path = path.resolve()
     if (path / "sw").is_dir():
-        manifest = PackageManifest.parse_tree((path / "sw").resolve())
+        selected_set = PackageSet.from_direct_dependencies((path / "sw").resolve())
     else:
-        manifest = PackageManifest.parse_tree(path / "sw")
+        selected_set = PackageSet.from_direct_dependencies(path / "sw")
 
     closure_paths: List[str] = subprocess.run(
         [make_nix_bin_path("nix-store"), "-qR", str(path)],
@@ -626,7 +630,7 @@ def run_list(*, root, only_selected, name_patterns):
     closure_map: Dict[str, List[str]] = closure_paths_to_map(closure_paths)
 
     if only_selected:
-        target_pnames = list(manifest.all_pnames())
+        target_pnames = list(selected_set.all_pnames())
     else:
         target_pnames = list(closure_map.keys())
 
@@ -640,7 +644,7 @@ def run_list(*, root, only_selected, name_patterns):
 
     print_package_list(
         pnames=target_pnames,
-        manifest_pair=PackageManifestPair(manifest, manifest),
+        selected_sets=PackageSetPair(selected_set, selected_set),
         left_versions_map=closure_map,
         right_versions_map=None,
         fixed_install_state=INST_INSTALLED,
@@ -669,17 +673,17 @@ def run_diff(
     print(f"<<< {left_path}")
     print(f">>> {right_path}")
 
-    left_manifest: Optional[PackageManifest] = None
-    right_manifest: Optional[PackageManifest] = None
+    left_selected_set: Optional[PackageSet] = None
+    right_selected_set: Optional[PackageSet] = None
 
     if (left_resolved / "sw").is_dir() and (right_resolved / "sw").is_dir():
-        left_manifest = PackageManifest.parse_tree((left_resolved / "sw").resolve())
-        right_manifest = PackageManifest.parse_tree((right_resolved / "sw").resolve())
+        left_selected_set = PackageSet.from_direct_dependencies((left_resolved / "sw").resolve())
+        right_selected_set = PackageSet.from_direct_dependencies((right_resolved / "sw").resolve())
     else:
-        left_manifest = PackageManifest.parse_tree(left_resolved)
-        right_manifest = PackageManifest.parse_tree(right_resolved)
+        left_selected_set = PackageSet.from_direct_dependencies(left_resolved)
+        right_selected_set = PackageSet.from_direct_dependencies(right_resolved)
 
-    manifest_pair = PackageManifestPair(left_manifest, right_manifest)
+    selected_sets = PackageSetPair(left_selected_set, right_selected_set)
 
     left_closure_paths: List[str] = subprocess.run(
         [make_nix_bin_path("nix-store"), "-qR", str(left_resolved)],
@@ -711,7 +715,7 @@ def run_diff(
     for pname in common_package_names:
         if left_closure_map[pname] != right_closure_map[pname]:
             package_names_with_changed_versions.append(pname)
-        elif manifest_pair.is_selection_state_changed(pname):
+        elif selected_sets.is_selection_state_changed(pname):
             package_names_with_changed_selection_states.append(pname)
 
     any_changes_displayed = False
@@ -722,7 +726,7 @@ def run_diff(
         print("Version changes:")
         print_package_list(
             pnames=package_names_with_changed_versions,
-            manifest_pair=manifest_pair,
+            selected_sets=selected_sets,
             left_versions_map=left_closure_map,
             right_versions_map=right_closure_map,
             no_version_suffix_highlight=no_version_suffix_highlight,
@@ -734,7 +738,7 @@ def run_diff(
         print("Selection state changes:")
         print_package_list(
             pnames=package_names_with_changed_selection_states,
-            manifest_pair=manifest_pair,
+            selected_sets=selected_sets,
             left_versions_map=left_closure_map,
             fixed_install_state=INST_CHANGED,
         )
@@ -745,7 +749,7 @@ def run_diff(
         print("Added packages:")
         print_package_list(
             pnames=right_only_package_names,
-            manifest_pair=manifest_pair,
+            selected_sets=selected_sets,
             left_versions_map=right_closure_map,  # Yes, this is correct.
             fixed_install_state=INST_ADDED,
         )
@@ -756,7 +760,7 @@ def run_diff(
         print("Removed packages:")
         print_package_list(
             pnames=left_only_package_names,
-            manifest_pair=manifest_pair,
+            selected_sets=selected_sets,
             left_versions_map=left_closure_map,
             fixed_install_state=INST_REMOVED,
         )
