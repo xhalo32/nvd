@@ -43,6 +43,7 @@ import os.path
 import re
 import subprocess
 import sys
+from functools import total_ordering
 from pathlib import Path
 from signal import SIGPIPE, SIG_DFL, signal
 from subprocess import PIPE
@@ -127,6 +128,7 @@ class StorePath:
 # For the version comparison algorithm, see:
 # https://nix.dev/manual/nix/stable/command-ref/nix-env/upgrade#versions
 
+@total_ordering
 class VersionChunk:
     def __init__(self, chunk_value: Union[int, str]):
         assert isinstance(chunk_value, int) or isinstance(chunk_value, str)
@@ -145,9 +147,9 @@ class VersionChunk:
         y_int = isinstance(y, int)
         if x_int and y_int:
             return x < y
-        elif (x == "" and y_int) or x == "pre":
+        elif (x == "" and y_int) or (x == "pre" and y != "pre"):
             return True
-        elif (x_int and y == "") or y == "pre":
+        elif (x_int and y == "") or (y == "pre" and x != "pre"):
             return False
         elif x_int:  # y is a string
             return False
@@ -162,6 +164,7 @@ class VersionChunk:
 
         return self._chunk_value == other._chunk_value
 
+@total_ordering
 class Version:
     def __init__(self, text: Optional[str]):
         if text is None:
