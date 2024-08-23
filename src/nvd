@@ -334,7 +334,7 @@ class PackageSetPair:
 
         return selection_state_str
 
-    def is_selection_state_changed(self, pname: str) -> str:
+    def is_selection_state_changed(self, pname: str) -> bool:
         in_left_set = \
             self._left_set is not None and \
             self._left_set.contains_pname(pname)
