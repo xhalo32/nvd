@@ -47,7 +47,7 @@ from functools import total_ordering
 from pathlib import Path
 from signal import SIGPIPE, SIG_DFL, signal
 from subprocess import PIPE
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Optional, Union
 
 signal(SIGPIPE, SIG_DFL)  # Python handles SIGPIPE improperly by default.
 
@@ -172,7 +172,7 @@ class Version:
 
         self._text: str = text
 
-        self._chunks: List[VersionChunk] = []
+        self._chunks: list[VersionChunk] = []
         while text != "":
             first_char = text[0]
             if first_char.isdigit():
@@ -227,8 +227,8 @@ class Package:
         return self._store_path
 
 class PackageSet:
-    def __init__(self, packages: List[Package], store_paths: List[str]):
-        assert isinstance(packages, List)
+    def __init__(self, packages: list[Package], store_paths: list[str]):
+        assert isinstance(packages, list)
         assert all(isinstance(package, Package) for package in packages)
 
         self._packages = packages
@@ -236,7 +236,7 @@ class PackageSet:
 
         # Unordered map from pnames to available package versions, in ascending
         # version order.
-        self._packages_by_pname: Dict[str, List[Package]] = {}
+        self._packages_by_pname: dict[str, list[Package]] = {}
         for entry in packages:
             self._packages_by_pname.setdefault(entry.pname(), []).append(entry)
 
@@ -252,7 +252,7 @@ class PackageSet:
         return PackageSet.from_nix_query(["--requisites", str(path)])
 
     @staticmethod
-    def from_nix_query(nix_query_args: List[str]) -> "PackageSet":
+    def from_nix_query(nix_query_args: list[str]) -> "PackageSet":
         result_paths_str: str = subprocess.run(
             [make_nix_bin_path("nix-store"), "--query"] + nix_query_args,
             stdout=PIPE,
@@ -260,7 +260,7 @@ class PackageSet:
             check=True,
         ).stdout.rstrip("\n")
 
-        result_paths: List[str] = \
+        result_paths: list[str] = \
             result_paths_str.split("\n") if result_paths_str else []
 
         packages = []
@@ -283,7 +283,7 @@ class PackageSet:
     def all_store_paths(self):
         return iter(self._store_paths)
 
-    def get_pname_versions(self, pname: str) -> List[Version]:
+    def get_pname_versions(self, pname: str) -> list[Version]:
         pkgs = self._packages_by_pname.get(pname, [])
         return [pkg.version() for pkg in pkgs]
 
@@ -343,7 +343,7 @@ class PackageSetPair:
             self._right_set.contains_pname(pname)
         return in_left_set != in_right_set
 
-def parse_pname_version(path: str) -> Tuple[str, Optional[str]]:
+def parse_pname_version(path: str) -> tuple[str, Optional[str]]:
     base_path = str(StorePath(path).to_base_path().path())
 
     match = NIX_STORE_PATH_REGEX.search(base_path)
@@ -355,7 +355,7 @@ def parse_pname_version(path: str) -> Tuple[str, Optional[str]]:
     return pname, version
 
 def render_versions(
-        version_list: List[Version],
+        version_list: list[Version],
         *,
         colour: bool = False,
         highlight_from_pos: Optional[int] = None,
@@ -397,7 +397,7 @@ def render_versions(
 
 def print_package_list(
         *,
-        pnames: List[str],
+        pnames: list[str],
         selected_sets: PackageSetPair,
         left_package_set: PackageSet,
         right_package_set: Optional[PackageSet] = None,
@@ -498,7 +498,7 @@ def find_common_version_prefix(x: str, y: str, limit: Optional[int]) -> int:
 
     return i
 
-def find_common_version_prefix_lists(*lsts: List[str]) -> int:
+def find_common_version_prefix_lists(*lsts: list[str]) -> int:
     first = True
     i: int = 0
     target: str
@@ -588,7 +588,7 @@ def make_nix_bin_path(exe_name: str) -> str:
     else:
         return exe_name
 
-def make_extra_experimental_features_args() -> List[str]:
+def make_extra_experimental_features_args() -> list[str]:
     global USE_NIX_COMMAND_FEATURE
     if USE_NIX_COMMAND_FEATURE:
         return ["--extra-experimental-features", "nix-command"]
