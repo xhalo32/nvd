@@ -685,7 +685,7 @@ def query_closure_disk_usage_bytes(target: Path) -> Optional[int]:
             # allowed to fail.
         ).stdout
     except FileNotFoundError:
-        sys.stderr.write("nvd: Couldn't run 'nix path-info --closure-size'.\n")
+        sys.stderr.write("nvd: Error, couldn't run 'nix path-info --closure-size'.\n")
         return None
 
     lines = stdout.rstrip("\n").split("\n")
