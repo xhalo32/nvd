@@ -6,8 +6,15 @@ nvd \- Nix/NixOS package version diff tool
 .B nvd [ -h | --help ]
 .P
 .B nvd [ GLOBAL OPTIONS ] diff
+.RS
+.B [ --sort
+.I sort-order
+.B ]
+.br
 .I root1
+.br
 .I root2
+.RE
 .P
 .B nvd [ GLOBAL OPTIONS ] list
 .RS
@@ -16,6 +23,10 @@ nvd \- Nix/NixOS package version diff tool
 .B ]
 .br
 .B [ -s|--selected ]
+.br
+.B [ --sort
+.I sort-order
+.B ]
 .br
 .B [
 .I name-pattern
@@ -129,6 +140,16 @@ An optional path to a directory containing
 etc. binaries to use.  If provided, all invocations of Nix binaries will use
 this directory.  If empty or not provided, then invocations of Nix binaries will
 use regular path lookup.  This is the default.
+.TP
+--sort=<sort-order>
+Specifies the order to use to sort package lists.  The argument is a
+comma-separted list of keywords indicating which properties to sort on.  The
+first keyword given is the primary sort, and subsequent keywords are used to
+break ties, in order.  Each keyword may be preceeded by a hyphen
+.B \-
+to reverse the regular sort order of the keyword.  The default order is
+.B name,
+which sorts by package name.  Currently only this keyword is supported.
 .TP
 -r|--root <store-path>
 For the

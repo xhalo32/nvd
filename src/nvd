@@ -43,11 +43,12 @@ import os.path
 import re
 import subprocess
 import sys
-from functools import total_ordering
+from abc import ABC, abstractmethod
+from functools import cmp_to_key, total_ordering
 from pathlib import Path
 from signal import SIGPIPE, SIG_DFL, signal
 from subprocess import PIPE
-from typing import Optional, Union
+from typing import Any, Iterable, Optional, Union
 
 signal(SIGPIPE, SIG_DFL)  # Python handles SIGPIPE improperly by default.
 
@@ -283,9 +284,11 @@ class PackageSet:
     def all_store_paths(self):
         return iter(self._store_paths)
 
+    def get_pname_packages(self, pname: str) -> list[Package]:
+        return self._packages_by_pname.get(pname, [])
+
     def get_pname_versions(self, pname: str) -> list[Version]:
-        pkgs = self._packages_by_pname.get(pname, [])
-        return [pkg.version() for pkg in pkgs]
+        return [pkg.version() for pkg in self.get_pname_packages(pname)]
 
 class PackageSetPair:
     def __init__(
@@ -343,6 +346,121 @@ class PackageSetPair:
             self._right_set.contains_pname(pname)
         return in_left_set != in_right_set
 
+def cmp(a, b) -> int:
+    return (a > b) - (a < b)
+
+class PackageListEntry:
+    def __init__(
+        self,
+        *,
+        left_packages: list[Package],
+        right_packages: Optional[list[Package]],
+    ) -> None:
+        assert left_packages or right_packages, "No packages given."
+
+        self._left_packages = left_packages
+        self._right_packages = right_packages
+
+    def get_pname(self) -> str:
+        if self._right_packages:
+            return self._right_packages[0].pname()
+        else:
+            return self._left_packages[0].pname()
+
+    def get_left_packages(self) -> list[Package]:
+        return self._left_packages
+
+    def get_right_packages(self) -> Optional[list[Package]]:
+        return self._right_packages
+
+class PackageListEntryComparator:
+    @abstractmethod
+    def name(self) -> str:
+        pass
+
+    @abstractmethod
+    def cmp_packages(self, a: PackageListEntry, b: PackageListEntry) -> int:
+        pass
+
+    def reversed(self) -> "PackageListEntryComparator":
+        return PackageListEntryReverseComparator(self)
+
+class PackageListEntryReverseComparator(PackageListEntryComparator):
+    def __init__(self, delegate: PackageListEntryComparator):
+        self._delegate = delegate
+
+    def name(self) -> str:
+        return "-" + self._delegate.name()
+
+    def cmp_packages(self, a: PackageListEntry, b: PackageListEntry) -> int:
+        return self._delegate.cmp_packages(b, a)
+
+    def reversed(self) -> PackageListEntryComparator:
+        return self._delegate
+
+class PackageListEntryNameComparator(PackageListEntryComparator):
+    def name(self) -> str:
+        return "name"
+
+    def cmp_packages(self, a: PackageListEntry, b: PackageListEntry) -> int:
+        return cmp(
+            a.get_left_packages()[0].pname(),
+            b.get_left_packages()[0].pname(),
+        )
+
+ALL_SORTS: dict[str, PackageListEntryComparator] = {
+    sk.name(): sk
+    for sk in (
+        # The first one listed here is the default.
+        PackageListEntryNameComparator(),
+    )
+}
+
+DEFAULT_SORT: PackageListEntryComparator = next(iter(ALL_SORTS.values()))
+
+class PackageListEntryCombinedComparator(PackageListEntryComparator):
+    def __init__(self, comparators: Iterable[PackageListEntryComparator]):
+        self._comparators = list(comparators)
+
+    @staticmethod
+    def from_str(val: Optional[str]):
+        if not val:
+            val = DEFAULT_SORT.name()
+
+        comparators: list[PackageListEntryComparator] = []
+
+        specs = val.split(",")
+        for spec in specs:
+            reverse = spec.startswith("-")
+            if reverse:
+                spec = spec[1:]
+
+            comparator = ALL_SORTS.get(spec, None)
+            if comparator is None:
+                sys.stderr.write(f"nvd: Error, unknown sort key '{spec}'.\n")
+                sys.exit(1)
+
+            if reverse:
+                comparator = comparator.reversed()
+
+            comparators.append(comparator)
+
+        return PackageListEntryCombinedComparator(comparators)
+
+    def name(self) -> str:
+        return ",".join(c.name() for c in self._comparators)
+
+    def cmp_packages(self, a: PackageListEntry, b: PackageListEntry) -> int:
+        for comparator in self._comparators:
+            result = comparator.cmp_packages(a, b)
+            if result != 0:
+                return result
+
+        return 0
+
+    def reversed(self) -> PackageListEntryComparator:
+        return PackageListEntryCombinedComparator(c.reversed() for c in self._comparators)
+
 def parse_pname_version(path: str) -> tuple[str, Optional[str]]:
     base_path = str(StorePath(path).to_base_path().path())
 
@@ -398,6 +516,7 @@ def render_versions(
 def print_package_list(
         *,
         pnames: list[str],
+        sort_comparator: Optional[PackageListEntryComparator],
         selected_sets: PackageSetPair,
         left_package_set: PackageSet,
         right_package_set: Optional[PackageSet] = None,
@@ -411,6 +530,26 @@ def print_package_list(
     if not pnames:
         print("No packages to display.")
         return
+
+    # If we've been asked to sort, then apply the sort to the pnames list, since
+    # we use that list's order to print things.
+    if sort_comparator is not None:
+        entries_to_sort: list[PackageListEntry] = [
+            PackageListEntry(
+                left_packages=left_package_set.get_pname_packages(pname),
+                right_packages=(
+                    right_package_set.get_pname_packages(pname)
+                    if right_package_set is not None
+                    else None
+                ),
+            )
+            for pname in pnames
+        ]
+
+        entries_to_sort.sort(key=cmp_to_key(sort_comparator.cmp_packages))
+
+        pnames = [e.get_pname() for e in entries_to_sort]
+        del entries_to_sort
 
     count = 1
     count_width = len(str(len(pnames)))
@@ -614,7 +753,13 @@ def query_nix_version() -> Version:
     raise RuntimeError(
         "Could not determine Nix version from 'nix-store --version' output: {output!r}")
 
-def run_list(*, root, only_selected, name_patterns):
+def run_list(
+    *,
+    root,
+    only_selected,
+    name_patterns,
+    sort_comparator: PackageListEntryComparator,
+):
     path = Path(root)
 
     if not path.exists():
@@ -648,6 +793,7 @@ def run_list(*, root, only_selected, name_patterns):
         left_package_set=closure_set,
         right_package_set=None,
         fixed_install_state=INST_INSTALLED,
+        sort_comparator=sort_comparator,
     )
 
 def run_diff(
@@ -655,6 +801,7 @@ def run_diff(
         root1,
         root2,
         no_version_suffix_highlight: bool,
+        sort_comparator: PackageListEntryComparator,
 ):
     left_path = Path(root1)
     right_path = Path(root2)
@@ -691,9 +838,9 @@ def run_diff(
     left_package_names = set(left_closure_set.all_pnames())
     right_package_names = set(right_closure_set.all_pnames())
 
-    common_package_names = sorted(left_package_names & right_package_names)
-    left_only_package_names = sorted(left_package_names - right_package_names)
-    right_only_package_names = sorted(right_package_names - left_package_names)
+    common_package_names = left_package_names & right_package_names
+    left_only_package_names = left_package_names - right_package_names
+    right_only_package_names = right_package_names - left_package_names
 
     # Announce version changes.
     package_names_with_changed_versions = []
@@ -716,6 +863,7 @@ def run_diff(
             left_package_set=left_closure_set,
             right_package_set=right_closure_set,
             no_version_suffix_highlight=no_version_suffix_highlight,
+            sort_comparator=sort_comparator,
         )
 
     # Announce specific changes for packages whose versions haven't changed.
@@ -727,6 +875,7 @@ def run_diff(
             selected_sets=selected_sets,
             left_package_set=left_closure_set,
             fixed_install_state=INST_CHANGED,
+            sort_comparator=sort_comparator,
         )
 
     # Announce added packages.
@@ -738,6 +887,7 @@ def run_diff(
             selected_sets=selected_sets,
             left_package_set=right_closure_set,  # Yes, this is correct.
             fixed_install_state=INST_ADDED,
+            sort_comparator=sort_comparator,
         )
 
     # Announce removed packages.
@@ -749,6 +899,7 @@ def run_diff(
             selected_sets=selected_sets,
             left_package_set=left_closure_set,
             fixed_install_state=INST_REMOVED,
+            sort_comparator=sort_comparator,
         )
 
     if not any_changes_displayed:
@@ -778,6 +929,13 @@ def run_diff(
     )
 
 def parse_args():
+    def add_sort_arg(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--sort",
+            default=DEFAULT_SORT.name(),
+            help="Sort order for displayed packages.",
+        )
+
     parser = argparse.ArgumentParser(
         description="Nix/NixOS package version diff tool",
         epilog="See the nvd(1) manual page for more information.",
@@ -804,6 +962,7 @@ def parse_args():
     diff_parser = subparsers.add_parser(
         "diff",
         help="Diff two Nix store paths and their closures.")
+    add_sort_arg(diff_parser)
     diff_parser.add_argument(
         "--no-version-suffix-highlight",
         action="store_true",
@@ -818,6 +977,7 @@ def parse_args():
     list_parser = subparsers.add_parser(
         "list",
         help="List packages in the closure of a Nix store path.")
+    add_sort_arg(list_parser)
     list_parser.add_argument(
         "-r", "--root",
         default="/run/current-system",
@@ -845,15 +1005,15 @@ def main():
     global INST_DOWNGRADED
     global INST_CHANGED
 
-    args = parse_args()
-    action = args.action
-    NIX_BIN_DIR = args.nix_bin_dir or None
+    args = vars(parse_args())
+    action = args["action"]
+    NIX_BIN_DIR = args["nix_bin_dir"] or None
     USE_COLOUR = \
-        args.color == "always" \
-        or (args.color == "auto" and sys.stdout.isatty() and not os.getenv('NO_COLOR'))
-    del args.action
-    del args.nix_bin_dir
-    del args.color
+        args["color"] == "always" \
+        or (args["color"] == "auto" and sys.stdout.isatty() and not os.getenv('NO_COLOR'))
+    del args["action"]
+    del args["nix_bin_dir"]
+    del args["color"]
 
     if USE_COLOUR:
         INST_ADDED = sgr(SGR_FG + SGR_BRIGHT + SGR_GREEN) + INST_ADDED
@@ -861,6 +1021,10 @@ def main():
         INST_UPGRADED = sgr(SGR_FG + SGR_BRIGHT + SGR_CYAN) + INST_UPGRADED
         INST_DOWNGRADED = sgr(SGR_FG + SGR_BRIGHT + SGR_YELLOW) + INST_DOWNGRADED
         INST_CHANGED = sgr(SGR_FG + SGR_BRIGHT + SGR_MAGENTA) + INST_CHANGED
+
+    if "sort" in args:
+        args["sort_comparator"] = PackageListEntryCombinedComparator.from_str(args["sort"])
+        del args["sort"]
 
     if action is None:
         print("nvd: Subcommand required, see 'nvd --help'.")
@@ -874,7 +1038,7 @@ def main():
     {
         "list": run_list,
         "diff": run_diff,
-    }[action](**vars(args))
+    }[action](**args)
 
 # Importing this module is kinda broken because of the constant initializations
 # at the top.

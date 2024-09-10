@@ -2,6 +2,9 @@
 
 ## 0.2.4 (unreleased)
 
+- Added `--sort` option for controlling the order packages are listed in, for
+  issue #17.
+
 - In the "Version changes" section of a diff, highlight the portions of version
   numbers that have changed, i.e., everything after the part common to all
   versions (issue #17).  This makes it easier to spot whether packages have had
