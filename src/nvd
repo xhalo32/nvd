@@ -125,8 +125,8 @@ class ProfileVersion:
     def __eq__(self, other):
         if not isinstance(other, ProfileVersion):
             return NotImplemented
-        
-        return self._version == other._version and self._path == other._path
+
+        return self._version == other._version
 
     def path(self):
         return self._path
@@ -1040,7 +1040,7 @@ def run_history(
         )
     else:
         print(f"Contents of profile version {oldest_profile.version()} were omitted, use --list-oldest to show them.")
-    
+
     # Show diff between all profiles.
     for [base_profile, displayed_profile] in pairwise(all_profiles):
         print(f"\n--- Version {displayed_profile.version()}:")

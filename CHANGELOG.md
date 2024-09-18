@@ -2,6 +2,9 @@
 
 ## 0.2.4 (unreleased)
 
+- Added an `nvd history` command for diffing successive generations of a
+  profile, issue #18.  Big thanks to Felix Uhl for the idea and implementation!
+
 - Added `--sort` option for controlling the order packages are listed in, for
   issue #17.
 
