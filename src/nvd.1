@@ -58,6 +58,8 @@ nvd \- Nix/NixOS package version diff tool
 .RS
 .B [ --color=(auto|always|never) ]
 .br
+.B [ --version-highlight=(xmas|bold|none) ]
+.br
 .B [ --nix-bin-dir=<path> ]
 .RE
 .SH DESCRIPTION
@@ -156,6 +158,21 @@ detects whether stdout is a terminal and only uses colour if it is.  Passing
 forces colour to always be used, and passing
 .B never
 forces colour to never be used.
+.TP
+--version-highlight=(xmas|bold|none)
+The colour scheme to use to highlight the changed parts of version strings, when
+versions are being compared (with the
+.B diff
+and
+.B history
+commands).  Highlighting is applied to the tail part of each version after
+whatever prefix is common to all versions present.  The default
+.B xmas
+colours old versions red and new versions green.  The value
+.B bold
+highlights the changed parts of versions in bold.  The value
+.B none
+disables highlighting.
 .TP
 --nix-bin-dir=<path>
 An optional path to a directory containing

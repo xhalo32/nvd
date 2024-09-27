@@ -108,6 +108,18 @@ ALPHANUM_RE = re.compile(r"\w")  # Alternatively [0-9a-zA-Z] would work.
 
 DIGIT_RE = re.compile("[0-9]")
 
+VERSION_HIGHLIGHT_NONE = "none"
+VERSION_HIGHLIGHT_BOLD = "bold"
+VERSION_HIGHLIGHT_XMAS = "xmas"
+
+VERSION_HIGHLIGHT_DEFAULT = VERSION_HIGHLIGHT_XMAS
+
+ALL_VERSION_HIGHLIGHTS = (
+    VERSION_HIGHLIGHT_NONE,
+    VERSION_HIGHLIGHT_BOLD,
+    VERSION_HIGHLIGHT_XMAS,
+)
+
 def raise_arg(e):
     raise e
 
@@ -507,8 +519,10 @@ def parse_pname_version(path: str) -> tuple[str, Optional[str]]:
 def render_versions(
         version_list: list[Version],
         *,
-        colour: bool = False,
+        colour: bool,
+        version_highlight: str,
         highlight_from_pos: Optional[int] = None,
+        is_right: bool = False,
 ) -> str:
     if version_list == []:
         return "<no versions>"
@@ -530,10 +544,21 @@ def render_versions(
             if highlight_from_pos is None:
                 text = sgr(SGR_FG + SGR_YELLOW) + text + sgr(SGR_RESET)
             else:
+                if version_highlight == VERSION_HIGHLIGHT_XMAS:
+                    sgr_highlight = sgr(SGR_FG + (SGR_GREEN if is_right else SGR_RED))
+                elif version_highlight == VERSION_HIGHLIGHT_BOLD:
+                    sgr_highlight = sgr(SGR_BOLD)
+                elif version_highlight == VERSION_HIGHLIGHT_NONE:
+                    sgr_highlight = ""
+                else:
+                    raise RuntimeError(
+                        f"Internal error, unknown version_highlight: {version_highlight!r}"
+                    )
+
                 text = \
                     sgr(SGR_FG + SGR_YELLOW) \
                     + text[0:highlight_from_pos] \
-                    + sgr(SGR_BOLD) \
+                    + sgr_highlight \
                     + text[highlight_from_pos:] \
                     + sgr(SGR_RESET)
 
@@ -546,14 +571,15 @@ def render_versions(
     return ", ".join(items)
 
 def print_packages(
-        *,
-        pnames: Collection[str],
-        sort_comparator: Optional[PackageListEntryComparator],
-        selected_sets: PackageSetPair,
-        left_package_set: PackageSet,
-        right_package_set: Optional[PackageSet] = None,
-        fixed_install_state: Optional[str] = None,
-        no_version_suffix_highlight: bool = False,
+    *,
+    pnames: Collection[str],
+    sort_comparator: Optional[PackageListEntryComparator],
+    version_highlight: str,
+    selected_sets: PackageSetPair,
+    left_package_set: PackageSet,
+    right_package_set: Optional[PackageSet] = None,
+    fixed_install_state: Optional[str] = None,
+    no_version_suffix_highlight: bool = False,
 ):
     assert (right_package_set is None) != (fixed_install_state is None), \
         "Expect either one package set, or a fixed install state."
@@ -621,7 +647,7 @@ def print_packages(
             pname_sgr = bold_if_selected_sgr + sgr(SGR_FG + SGR_GREEN)
 
         versions_common_prefix_len: Optional[int]
-        if have_single_version or no_version_suffix_highlight:
+        if have_single_version or version_highlight == VERSION_HIGHLIGHT_NONE:
             versions_common_prefix_len = None
         else:
             versions_common_prefix_len = find_common_version_prefix_lists(
@@ -642,13 +668,16 @@ def print_packages(
             render_versions(
                 left_versions,
                 colour=True,
+                version_highlight=version_highlight,
                 highlight_from_pos=versions_common_prefix_len,
             ),
             "" if have_single_version else (
                 " -> " + render_versions(
                     right_versions,
                     colour=True,
+                    version_highlight=version_highlight,
                     highlight_from_pos=versions_common_prefix_len,
+                    is_right=True,
                 )
             ),
         ))
@@ -847,6 +876,7 @@ def run_list(
     only_selected,
     name_patterns,
     sort_comparator: PackageListEntryComparator,
+    version_highlight: str,
 ):
     path = Path(root)
 
@@ -882,15 +912,16 @@ def run_list(
         right_package_set=None,
         fixed_install_state=INST_INSTALLED,
         sort_comparator=sort_comparator,
+        version_highlight=version_highlight,
     )
 
 def run_diff(
-        *,
-        root1,
-        root2,
-        no_version_suffix_highlight: bool,
-        sort_comparator: PackageListEntryComparator,
-        only_selected: bool,
+    *,
+    root1,
+    root2,
+    sort_comparator: PackageListEntryComparator,
+    only_selected: bool,
+    version_highlight: str,
 ):
     left_path = Path(root1)
     right_path = Path(root2)
@@ -963,8 +994,8 @@ def run_diff(
             selected_sets=selected_sets,
             left_package_set=left_closure_set,
             right_package_set=right_closure_set,
-            no_version_suffix_highlight=no_version_suffix_highlight,
             sort_comparator=sort_comparator,
+            version_highlight=version_highlight,
         )
 
     # Announce specific changes for packages whose versions haven't changed.
@@ -977,6 +1008,7 @@ def run_diff(
             left_package_set=left_closure_set,
             fixed_install_state=INST_CHANGED,
             sort_comparator=sort_comparator,
+            version_highlight=version_highlight,
         )
 
     # Announce added packages.
@@ -989,6 +1021,7 @@ def run_diff(
             left_package_set=right_closure_set,  # Yes, this is correct.
             fixed_install_state=INST_ADDED,
             sort_comparator=sort_comparator,
+            version_highlight=version_highlight,
         )
 
     # Announce removed packages.
@@ -1001,6 +1034,7 @@ def run_diff(
             left_package_set=left_closure_set,
             fixed_install_state=INST_REMOVED,
             sort_comparator=sort_comparator,
+            version_highlight=version_highlight,
         )
 
     if not any_changes_displayed:
@@ -1030,13 +1064,13 @@ def run_diff(
     )
 
 def run_history(
-        *,
-        profile,
-        minimum_version: int,
-        list_oldest: bool,
-        no_version_suffix_highlight: bool,
-        sort_comparator: PackageListEntryComparator,
-        only_selected: bool,
+    *,
+    profile,
+    minimum_version: int,
+    list_oldest: bool,
+    sort_comparator: PackageListEntryComparator,
+    only_selected: bool,
+    version_highlight: str,
 ):
     profile_path = Path(profile)
 
@@ -1065,7 +1099,8 @@ def run_history(
             root=oldest_profile.path(),
             only_selected=only_selected,
             name_patterns=[],
-            sort_comparator=sort_comparator
+            sort_comparator=sort_comparator,
+            version_highlight=version_highlight,
         )
     else:
         print(f"Contents of profile version {oldest_profile.version()} were omitted, use --list-oldest to show them.")
@@ -1076,9 +1111,9 @@ def run_history(
         run_diff(
             root1=base_profile.path(),
             root2=displayed_profile.path(),
-            no_version_suffix_highlight=no_version_suffix_highlight,
             sort_comparator=sort_comparator,
             only_selected=only_selected,
+            version_highlight=version_highlight,
         )
 
 def parse_args():
@@ -1113,6 +1148,11 @@ def parse_args():
         help="Controls use of colour; one of 'auto', 'never', 'always'.")
 
     parser.add_argument(
+        "--version-highlight",
+        default=VERSION_HIGHLIGHT_DEFAULT,
+        help="Colour scheme to apply to changed parts of versions.")
+
+    parser.add_argument(
         "--nix-bin-dir",
         default=None,
         help="Optional directory containing nix binaries, overrides path lookup.")
@@ -1124,10 +1164,6 @@ def parse_args():
         help="Diff two Nix store paths and their closures.")
     add_selected_arg(diff_parser)
     add_sort_arg(diff_parser)
-    diff_parser.add_argument(
-        "--no-version-suffix-highlight",
-        action="store_true",
-        help="Disable highlighting of the changed portions of versions.")
     diff_parser.add_argument(
         "root1",
         help="The first Nix store path to compare.")
@@ -1170,10 +1206,6 @@ def parse_args():
         action="store_true",
         help="Additionally list all packages in the first displayed profile."
     )
-    history_parser.add_argument(
-        "--no-version-suffix-highlight",
-        action="store_true",
-        help="Disable highlighting of the changed portions of versions.")
 
     return parser.parse_args()
 
@@ -1203,6 +1235,13 @@ def main():
         INST_UPGRADED = sgr(SGR_FG + SGR_BRIGHT + SGR_CYAN) + INST_UPGRADED
         INST_DOWNGRADED = sgr(SGR_FG + SGR_BRIGHT + SGR_YELLOW) + INST_DOWNGRADED
         INST_CHANGED = sgr(SGR_FG + SGR_BRIGHT + SGR_MAGENTA) + INST_CHANGED
+
+    if (
+        "version_highlight" in args
+        and args["version_highlight"] not in ALL_VERSION_HIGHLIGHTS
+    ):
+        sys.stderr.write(f"nvd: Error, unknown --version-highlight: '{args['version_highlight']}'\n")
+        sys.exit(1)
 
     if "sort" in args:
         args["sort_comparator"] = PackageListEntryCombinedComparator.from_str(args["sort"])
