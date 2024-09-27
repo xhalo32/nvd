@@ -11,7 +11,8 @@
 - In the "Version changes" section of a diff, highlight the portions of version
   numbers that have changed, i.e., everything after the part common to all
   versions (issue #17).  This makes it easier to spot whether packages have had
-  major or minor version bumps.
+  major or minor version bumps.  The colour scheme used is selectable with the
+  `--version-highlight` option.
 
 - Respect the `NO_COLOR` environment variable and disable colour when it is set
   and nonempty (when the default `--color=auto` is used).  For more info see:
