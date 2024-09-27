@@ -39,14 +39,15 @@
 
 import argparse
 import fnmatch
-from itertools import pairwise
 import os
 import os.path
 import re
 import subprocess
 import sys
 from abc import abstractmethod
+from collections.abc import Collection
 from functools import cmp_to_key, total_ordering
+from itertools import pairwise
 from pathlib import Path
 from signal import SIGPIPE, SIG_DFL, signal
 from subprocess import PIPE
@@ -544,7 +545,7 @@ def render_versions(
 
 def print_packages(
         *,
-        pnames: Iterable[str],
+        pnames: Collection[str],
         sort_comparator: Optional[PackageListEntryComparator],
         selected_sets: PackageSetPair,
         left_package_set: PackageSet,
