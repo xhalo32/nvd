@@ -6,7 +6,8 @@
   profile, issue #18.  Big thanks to Felix Uhl for the idea and implementation!
 
 - Added `--sort` option for controlling the order packages are listed in, for
-  issue #17.
+  issue #17.  Supported sort options are package name, and the level of semver
+  version change.
 
 - In the "Version changes" section of a diff, highlight the portions of version
   numbers that have changed, i.e., everything after the part common to all

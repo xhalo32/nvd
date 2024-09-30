@@ -193,7 +193,24 @@ break ties, in order.  Each keyword may be preceeded by a hyphen
 .B \-
 to reverse the regular sort order of the keyword.  The default order is
 .B name,
-which sorts by package name.  Currently only this keyword is supported.
+which sorts by package name.
+.IP
+The keyword
+.B semver
+sorts packages according to how significant their version changes are, by the
+rules of Semantic Versioning, when versions are being compared (with the
+.B diff
+and
+.B history
+commands).  Each package's highest old version is compared with its highest new
+version.  Packages where the first component of these two versions have changed
+are sorted first.  Packages where the second version components differ are
+sorted second, and so on.  Components here are consecutive runs of digits, or of
+letters (but not both), as per the Nix version handling rules.  Only the
+position of the first difference is used; the numeric difference between version
+numbers does not matter.  Because only the highest old and new versions are
+compared, this sort type may not produce ideal results if multiple versions of a
+package are present.
 .TP
 -r|--root <store-path>
 For the

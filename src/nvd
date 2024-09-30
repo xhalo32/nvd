@@ -253,6 +253,9 @@ class Version:
         """Returns the version string, empty (not None) if there is no version."""
         return self._text
 
+    def chunks(self) -> list[VersionChunk]:
+        return self._chunks
+
 class Package:
     def __init__(self, *, pname: str, version: Version, store_path: StorePath):
         assert isinstance(pname, str), f"Not a string: {pname!r}"
@@ -405,6 +408,8 @@ class PackageListEntry:
         self._left_packages = left_packages
         self._right_packages = right_packages
 
+        self._first_changed_version_chunk: Optional[int] = None
+
     def get_pname(self) -> str:
         if self._right_packages:
             return self._right_packages[0].pname()
@@ -416,6 +421,31 @@ class PackageListEntry:
 
     def get_right_packages(self) -> Optional[list[Package]]:
         return self._right_packages
+
+    def find_first_changed_version_chunk(self) -> int:
+        """
+        Returns the position of the earliest version chunk that differs when
+        comparing the maximum version on the left, with the maximum version on
+        the right.
+        """
+
+        if self._right_packages is None:
+            return 0
+
+        if self._first_changed_version_chunk is not None:
+            return self._first_changed_version_chunk
+
+        max_left_ver = self.get_left_packages()[-1].version()
+        max_right_ver = self.get_right_packages()[-1].version()
+        chunks_in_common = 0
+        for left_chunk, right_chunk in zip(max_left_ver.chunks(), max_right_ver.chunks()):
+            if left_chunk == right_chunk:
+                chunks_in_common += 1
+            else:
+                break
+
+        self._first_changed_version_chunk = chunks_in_common
+        return chunks_in_common
 
 class PackageListEntryComparator:
     @abstractmethod
@@ -443,6 +473,8 @@ class PackageListEntryReverseComparator(PackageListEntryComparator):
         return self._delegate
 
 class PackageListEntryNameComparator(PackageListEntryComparator):
+    """Sorts package list entries by pname."""
+
     def name(self) -> str:
         return "name"
 
@@ -452,11 +484,31 @@ class PackageListEntryNameComparator(PackageListEntryComparator):
             b.get_left_packages()[0].pname(),
         )
 
+class PackageListEntrySemVerChangeComparator(PackageListEntryComparator):
+    """
+    Sorts package list entries by the level of version change according to
+    Semantic Versioning.
+
+    The maximum version on the left is compared with the maximum version on the
+    right.  Packages whose first version chunks differ are sorted first,
+    followed by packages whose second chunks differ, and so on.
+    """
+
+    def name(self) -> str:
+        return "semver"
+
+    def cmp_packages(self, a: PackageListEntry, b: PackageListEntry) -> int:
+        return cmp(
+            a.find_first_changed_version_chunk(),
+            b.find_first_changed_version_chunk(),
+        )
+
 ALL_SORTS: dict[str, PackageListEntryComparator] = {
     sk.name(): sk
     for sk in (
         # The first one listed here is the default.
         PackageListEntryNameComparator(),
+        PackageListEntrySemVerChangeComparator(),
     )
 }
 
