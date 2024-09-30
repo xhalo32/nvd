@@ -500,7 +500,10 @@ class PackageListEntryCombinedComparator(PackageListEntryComparator):
             if result != 0:
                 return result
 
-        return 0
+        # Fall back to applying the default sort, if none of the requested
+        # comparators have found any difference.  Without this, packages may
+        # appear in nondeterministic order.
+        return DEFAULT_SORT.cmp_packages(a, b)
 
     def reversed(self) -> PackageListEntryComparator:
         return PackageListEntryCombinedComparator(c.reversed() for c in self._comparators)
