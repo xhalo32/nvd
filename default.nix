@@ -18,7 +18,7 @@ in
 warn (
 stdenv.mkDerivation {
   pname = "nvd";
-  version = "0.2.4";
+  version = "0.2.5";
 
   src = nix-gitignore.gitignoreSourcePure [ ./.gitignore ] ./src;
 

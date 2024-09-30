@@ -55,7 +55,7 @@ from typing import Iterable, List, Optional, Union
 
 signal(SIGPIPE, SIG_DFL)  # Python handles SIGPIPE improperly by default.
 
-NVD_VERSION = "0.2.4"
+NVD_VERSION = "0.2.5"
 
 NIX_BIN_DIR = None
 USE_NIX_COMMAND_FEATURE = False  # Whether to explicitly enable the nix-command feature.
