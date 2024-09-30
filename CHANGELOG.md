@@ -1,6 +1,6 @@
 # nvd changelog
 
-## 0.2.4 (unreleased)
+## 0.2.4 (2024-09-29)
 
 - Added an `nvd history` command for diffing successive generations of a
   profile, issue #18.  Big thanks to Felix Uhl for the idea and implementation!
