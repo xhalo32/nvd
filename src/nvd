@@ -61,6 +61,8 @@ NIX_BIN_DIR = None
 USE_NIX_COMMAND_FEATURE = False  # Whether to explicitly enable the nix-command feature.
 USE_COLOUR = False
 
+LIST_DEFAULT_ROOT = "/run/current-system"
+
 SGR_RESET = 0
 SGR_BOLD = 1
 SGR_FG = 30
@@ -937,6 +939,12 @@ def run_list(
 
     if not path.exists():
         sys.stderr.write(f"Path does not exist: {path}\n")
+        if str(path) == LIST_DEFAULT_ROOT:
+            sys.stderr.write(
+                "Perhaps this isn't a NixOS system?\n"
+                "Pass -r/--root to change the target of 'nvd list'.\n"
+                "For example: nvd list -r ~/.nix-profile\n"
+            )
         sys.exit(1)
 
     path = path.resolve()
@@ -1233,8 +1241,8 @@ def parse_args():
     add_sort_arg(list_parser)
     list_parser.add_argument(
         "-r", "--root",
-        default="/run/current-system",
-        help="The The Nix store path to work with.")
+        default=LIST_DEFAULT_ROOT,
+        help=f"The Nix store path to work with (default {LIST_DEFAULT_ROOT}).")
     list_parser.add_argument(
         nargs="*",
         default=[],

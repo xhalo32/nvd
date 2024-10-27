@@ -2,6 +2,9 @@
 
 ## 0.2.5 (unreleased)
 
+- Improve the error message when calling `nvd list`, and `/run/current-system`
+  doesn't exist (issue #21).
+
 ## 0.2.4 (2024-09-29)
 
 - Added an `nvd history` command for diffing successive generations of a
