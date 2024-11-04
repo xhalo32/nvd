@@ -2,6 +2,9 @@
 
 ## 0.2.5 (unreleased)
 
+- Fixed `nvd history` to ignore broken profile symlinks in case they were
+  forcably removed somehow (issue #20).
+
 - Improve the error message when calling `nvd list`, and `/run/current-system`
   doesn't exist (issue #21).
 

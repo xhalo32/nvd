@@ -915,7 +915,13 @@ def is_link_to_profile(path: Path, profile_name: str) -> bool:
 
 def make_profile_generation_list(profile_link: Path, minimum_version: int) -> List[ProfileVersion]:
     profile_name = PROFILE_LINK_REGEX.match(str(profile_link)).group("profile")
-    all_profile_links = [l for l in profile_link.parent.iterdir() if is_link_to_profile(l, profile_name)]
+    # Use exists() to filter out broken symlinks, which has been reported to happen
+    # either with `home-manager expire-generations` or `nix profile wipe-history`
+    # (on Darwin with the DetSys installer in case that's relevant, see issue #20).
+    all_profile_links = [
+        l for l in profile_link.parent.iterdir()
+        if is_link_to_profile(l, profile_name) and l.exists()
+    ]
     all_profile_versions = [ProfileVersion(l) for l in all_profile_links]
     all_profile_versions.sort()
     profile_versions = [pv for pv in all_profile_versions if pv.version() >= minimum_version]
