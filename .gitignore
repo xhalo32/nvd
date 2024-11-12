@@ -1,2 +1,7 @@
 *~
 result
+
+# The main distribution of nvd is through Nixpkgs, at `nixpkgs.nvd`.
+# You're welcome to use nvd as a flake as well with any branch of Nixpkgs,
+# but you get to decide what branch or commit that is :).
+/flake.lock
