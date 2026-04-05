@@ -39,13 +39,16 @@
 
 import argparse
 import fnmatch
+import json
 import os
 import os.path
 import re
 import subprocess
 import sys
 from abc import abstractmethod
+from collections import deque
 from collections.abc import Collection
+from dataclasses import dataclass
 from functools import cmp_to_key, total_ordering
 from itertools import pairwise
 from pathlib import Path
@@ -1185,6 +1188,462 @@ def run_history(
             version_highlight=version_highlight,
         )
 
+###############################################################################
+# Sources: build-time dependency (.drv graph) analysis
+###############################################################################
+
+@dataclass
+class DrvInfo:
+    """Parsed derivation metadata from `nix derivation show`."""
+    path: str
+    name: str
+    builder: str
+    env: dict
+    outputs: dict
+    input_drvs: dict          # drv path -> {"outputs": [...]}
+    input_srcs: list          # plain store paths
+    structured_attrs: dict    # pre-parsed __json (if present)
+
+    def is_fod(self) -> bool:
+        """A fixed-output derivation has a content hash on at least one output."""
+        return any(o.get("hash") for o in self.outputs.values())
+
+    def is_package(self) -> bool:
+        """A 'real package' has a non-empty version in its environment."""
+        return bool(self.env.get("version", ""))
+
+    def store_path_name(self) -> str:
+        """The name part of the .drv store path (hash and .drv stripped)."""
+        basename = self.path.rsplit("/", 1)[-1]
+        # Strip 32-char hash + dash
+        after_hash = basename[33:] if len(basename) > 33 and basename[32] == "-" else basename
+        return after_hash.removesuffix(".drv")
+
+def load_drv_graph(drv_path: str) -> dict:
+    """Load the full transitive .drv graph via `nix derivation show -r`.
+    Returns a dict mapping drv paths to DrvInfo objects."""
+    result = subprocess.run(
+        [make_nix_bin_path("nix"), "derivation", "show", "-r", drv_path]
+        + make_extra_experimental_features_args(),
+        stdout=PIPE, text=True, check=True,
+    )
+    raw = json.loads(result.stdout)
+    drvs = {}
+    for path, data in raw.items():
+        drvs[path] = DrvInfo(
+            path=path,
+            name=data.get("name", ""),
+            builder=data.get("builder", ""),
+            env=data.get("env", {}),
+            outputs=data.get("outputs", {}),
+            input_drvs=data.get("inputDrvs", {}),
+            input_srcs=data.get("inputSrcs", []),
+            structured_attrs=data.get("structuredAttrs", {}),
+        )
+    return drvs
+
+# FOD naming
+
+GENERIC_NAMES = frozenset(["source", "download", "patch"])
+
+def _repo_name_from_url(url: str):
+    """Extract a repo/project name from a URL. Returns None if not possible."""
+    parts = url.split("://", 1)
+    if len(parts) < 2:
+        return None
+    path = parts[1].split("?", 1)[0]
+    segments = [s for s in path.split("/") if s]
+    # GitHub/GitLab: host/owner/repo/...
+    if len(segments) >= 3 and ("github" in segments[0] or "gitlab" in segments[0]):
+        return segments[2]
+    return None
+
+def _fod_name_from_structured_attrs(sa: dict):
+    """Try to extract a descriptive name from structuredAttrs."""
+    # fetchFromGitHub / fetchFromGitLab
+    repo = sa.get("repo")
+    if isinstance(repo, str) and repo not in GENERIC_NAMES:
+        return repo
+    # fetchgit
+    url = sa.get("url")
+    if isinstance(url, str) and sa.get("rev"):
+        name = _repo_name_from_url(url)
+        if name and name not in GENERIC_NAMES:
+            return name
+    # fetchzip
+    urls = sa.get("urls")
+    if isinstance(urls, list) and urls:
+        name = _repo_name_from_url(urls[0])
+        if name and name not in GENERIC_NAMES:
+            return name
+    return None
+
+def fod_name(drv: DrvInfo) -> str:
+    """Extract a descriptive name for a FOD.
+
+    Naming strategies tried in order, skipping generic results:
+    1. builtin:fetchurl → env name (always descriptive)
+    2. structuredAttrs → repo/url extraction
+    3. env name (if not generic)
+    4. Store path name (universal fallback)
+    """
+    # builtin:fetchurl — always has a descriptive env name
+    if drv.builder == "builtin:fetchurl":
+        name = drv.env.get("name", "")
+        return name if name else drv.store_path_name()
+
+    # Try structuredAttrs (fetchFromGitHub, fetchgit, fetchzip)
+    if drv.structured_attrs:
+        name = _fod_name_from_structured_attrs(drv.structured_attrs)
+        if name:
+            return name
+
+    # Plain fetchurl — env name if not generic
+    env_name = drv.env.get("name", "")
+    if env_name and env_name not in GENERIC_NAMES:
+        return env_name
+
+    # Universal fallback
+    return drv.store_path_name()
+
+# Graph walk with parent tracking
+
+def walk_drv_graph_with_parents(
+    drvs: dict,
+    root: str,
+) -> tuple:
+    """BFS walk of the .drv graph. Returns (visited_set, parent_map).
+
+    parent_map maps each drv path and input_source path to its nearest
+    'package' ancestor name. A package is a non-FOD derivation with a
+    version in its environment.
+    """
+    visited = set()
+    parent_map = {}
+    root_drv = drvs.get(root)
+    root_name = root_drv.store_path_name() if root_drv else parse_pname_version(root)[0] or root
+    queue = deque([(root, root_name)])
+
+    while queue:
+        drv_path, parent_name = queue.popleft()
+        if drv_path in visited:
+            continue
+        visited.add(drv_path)
+
+        drv = drvs.get(drv_path)
+        if drv is None:
+            continue
+
+        # Only non-FOD packages with a version become parents
+        if not drv.is_fod() and drv.is_package():
+            propagated = drv.store_path_name()
+        else:
+            propagated = parent_name
+
+        parent_map.setdefault(drv_path, parent_name)
+
+        for input_path in drv.input_drvs:
+            if input_path not in visited:
+                parent_map.setdefault(input_path, propagated)
+                queue.append((input_path, propagated))
+
+        for input_src in drv.input_srcs:
+            parent_map.setdefault(input_src, propagated)
+
+    return visited, parent_map
+
+# Source collection
+
+@dataclass
+class SourceEntry:
+    path: str
+    name: str
+    kind: str     # "fod" or "input_source"
+    parent: str
+
+def _store_path_name(path: str) -> str:
+    """Extract name from a store path (strip hash prefix)."""
+    basename = path.rsplit("/", 1)[-1]
+    if len(basename) > 33 and basename[32] == "-":
+        return basename[33:]
+    return basename
+
+def collect_sources(
+    drvs: dict,
+    unique_drv_paths: set,
+    parent_map: dict,
+    root_name: str,
+) -> list:
+    """Collect FOD sources and input_sources from unique derivations."""
+    sources = []
+    seen_outputs = set()
+    seen_input_srcs = set()
+
+    for drv_path in unique_drv_paths:
+        drv = drvs.get(drv_path)
+        if drv is None:
+            continue
+
+        parent = parent_map.get(drv_path, "")
+
+        # Collect FODs
+        if drv.is_fod():
+            name = fod_name(drv)
+            out = drv.outputs.get("out", {})
+            output_path = out.get("path", "")
+            if output_path and output_path not in seen_outputs:
+                seen_outputs.add(output_path)
+                sources.append(SourceEntry(
+                    path=drv_path, name=name, kind="fod", parent=parent))
+
+        # Collect input_sources
+        for src_path in drv.input_srcs:
+            if src_path not in seen_input_srcs:
+                seen_input_srcs.add(src_path)
+                src_name = _store_path_name(src_path)
+                src_parent = parent_map.get(src_path, parent)
+                sources.append(SourceEntry(
+                    path=src_path, name=src_name, kind="input_source", parent=src_parent))
+
+    # Sort by parent, kind, name, then store path name for stability
+    sources.sort(key=lambda s: (s.parent, s.kind, s.name, _store_path_name(s.path)))
+
+    # Disambiguate entries sharing the same parent/name
+    seen_keys = {}
+    for source in sources:
+        key = (source.parent, source.name)
+        count = seen_keys.get(key, 0)
+        if count > 0:
+            if source.parent != root_name:
+                print(
+                    f"WARNING: {source.parent}/{source.name} has duplicates "
+                    f"(#{count}) — path: {source.path} kind: {source.kind}",
+                    file=sys.stderr,
+                )
+            source.name = f"{source.name}.{count}"
+        seen_keys[key] = count + 1
+
+    return sources
+
+def compute_sources(drv_path: str, exclude_drvs: list) -> list:
+    """Full pipeline: load graph, walk, exclude, collect sources."""
+    print(f"Loading target graph: {drv_path}", file=sys.stderr)
+    drvs = load_drv_graph(drv_path)
+    print(f"  {len(drvs)} derivations", file=sys.stderr)
+
+    visited, parent_map = walk_drv_graph_with_parents(drvs, drv_path)
+
+    # Build exclusion set
+    exclude_set = set()
+    for exc in exclude_drvs:
+        print(f"Loading exclude graph: {exc}", file=sys.stderr)
+        exc_drvs = load_drv_graph(exc)
+        print(f"  {len(exc_drvs)} derivations", file=sys.stderr)
+        exclude_set.update(exc_drvs.keys())
+
+    unique = visited - exclude_set
+    print(f"{len(unique)} unique derivations after exclusion", file=sys.stderr)
+
+    root_name = drvs[drv_path].store_path_name() if drv_path in drvs else drv_path
+    sources = collect_sources(drvs, unique, parent_map, root_name)
+
+    fod_count = sum(1 for s in sources if s.kind == "fod")
+    is_count = sum(1 for s in sources if s.kind == "input_source")
+    print(f"{len(sources)} sources ({fod_count} FODs, {is_count} input_sources)", file=sys.stderr)
+
+    return sources
+
+# Sources subcommands
+
+def run_sources_list(root, exclude, output_format, **_kwargs):
+    """List sources for a single derivation."""
+    root_path = str(Path(root).resolve())
+    sources = compute_sources(root_path, exclude or [])
+
+    if output_format == "json":
+        entries = [{"path": s.path, "name": s.name, "kind": s.kind, "parent": s.parent}
+                   for s in sources]
+        print(json.dumps(entries, indent=2))
+    else:
+        # Tree output grouped by parent
+        current_parent = None
+        for s in sources:
+            if s.parent != current_parent:
+                current_parent = s.parent
+                print(f"\n{sgr(SGR_BOLD)}{current_parent}{sgr(SGR_RESET)}")
+            kind_color = SGR_FG + SGR_CYAN if s.kind == "fod" else SGR_FG + SGR_YELLOW
+            print(f"  {sgr(kind_color)}{s.kind:14s}{sgr(SGR_RESET)} {s.name}")
+
+def _sources_to_package_set(sources: list) -> PackageSet:
+    """Build a PackageSet from source entries, using parent names as packages.
+
+    Each unique parent name becomes a Package with pname and version
+    extracted via parse_pname_version(). This allows reusing nvd's
+    existing version comparison and display logic.
+    """
+    seen_parents = {}
+    for s in sources:
+        if s.parent not in seen_parents:
+            seen_parents[s.parent] = s
+
+    packages = []
+    store_paths = []
+    for parent, example_source in seen_parents.items():
+        pname, version = parse_pname_version(f"/nix/store/00000000000000000000000000000000-{parent}")
+        packages.append(Package(
+            pname=pname,
+            version=Version(version),
+            store_path=StorePath(example_source.path),
+        ))
+        store_paths.append(example_source.path)
+
+    return PackageSet(packages, store_paths)
+
+def run_sources_diff(root1, root2, exclude, version_highlight=VERSION_HIGHLIGHT_DEFAULT, **_kwargs):
+    """Diff sources between two derivations.
+
+    Uses nvd's package-level diffing (by pname) to match parents across
+    version changes, then shows per-source detail within each changed package.
+    """
+    left_sources = compute_sources(str(Path(root1).resolve()), exclude or [])
+    right_sources = compute_sources(str(Path(root2).resolve()), exclude or [])
+
+    # Package-level diff using nvd's existing machinery
+    left_pkg_set = _sources_to_package_set(left_sources)
+    right_pkg_set = _sources_to_package_set(right_sources)
+
+    left_pnames = set(left_pkg_set.all_pnames())
+    right_pnames = set(right_pkg_set.all_pnames())
+    pnames_in_both = left_pnames & right_pnames
+
+    version_changed = []
+    for pname in pnames_in_both:
+        if left_pkg_set.get_pname_versions(pname) != right_pkg_set.get_pname_versions(pname):
+            version_changed.append(pname)
+
+    added_pnames = sorted(right_pnames - left_pnames)
+    removed_pnames = sorted(left_pnames - right_pnames)
+
+    # Group sources by parent pname for per-source detail
+    def group_by_parent_pname(sources):
+        groups = {}
+        for s in sources:
+            pname, _ = parse_pname_version(f"/nix/store/00000000000000000000000000000000-{s.parent}")
+            groups.setdefault(pname, {})[s.name] = s
+        return groups
+
+    left_groups = group_by_parent_pname(left_sources)
+    right_groups = group_by_parent_pname(right_sources)
+
+    # Build a dummy selected set (no selection tracking for sources)
+    no_selection = PackageSetPair(None, None)
+
+    print(f"<<< {root1}")
+    print(f">>> {root2}")
+
+    any_changes = False
+
+    # Version changes — with per-source detail
+    if version_changed:
+        any_changes = True
+        print(f"\n{sgr(SGR_BOLD)}Version changes:{sgr(SGR_RESET)}")
+        print_packages(
+            pnames=version_changed,
+            selected_sets=no_selection,
+            left_package_set=left_pkg_set,
+            right_package_set=right_pkg_set,
+            sort_comparator=DEFAULT_SORT,
+            version_highlight=version_highlight,
+        )
+
+        # Per-source detail for each changed package
+        for pname in sorted(version_changed):
+            left_srcs = left_groups.get(pname, {})
+            right_srcs = right_groups.get(pname, {})
+            all_names = sorted(set(left_srcs) | set(right_srcs))
+
+            details = []
+            for name in all_names:
+                ls = left_srcs.get(name)
+                rs = right_srcs.get(name)
+                if ls and not rs:
+                    details.append(f"    {sgr(SGR_FG + SGR_RED)}-{sgr(SGR_RESET)} {name}")
+                elif rs and not ls:
+                    details.append(f"    {sgr(SGR_FG + SGR_GREEN)}+{sgr(SGR_RESET)} {name}")
+                elif ls.path != rs.path:
+                    details.append(f"    {sgr(SGR_FG + SGR_CYAN)}~{sgr(SGR_RESET)} {name}")
+
+            if details:
+                print(f"  {sgr(SGR_BOLD)}{pname}:{sgr(SGR_RESET)}")
+                for d in details:
+                    print(d)
+
+    # Added packages
+    if added_pnames:
+        any_changes = True
+        print(f"\n{sgr(SGR_BOLD)}Added packages:{sgr(SGR_RESET)}")
+        print_packages(
+            pnames=added_pnames,
+            selected_sets=no_selection,
+            left_package_set=right_pkg_set,
+            fixed_install_state=INST_ADDED,
+            sort_comparator=DEFAULT_SORT,
+            version_highlight=version_highlight,
+        )
+
+    # Removed packages
+    if removed_pnames:
+        any_changes = True
+        print(f"\n{sgr(SGR_BOLD)}Removed packages:{sgr(SGR_RESET)}")
+        print_packages(
+            pnames=removed_pnames,
+            selected_sets=no_selection,
+            left_package_set=left_pkg_set,
+            fixed_install_state=INST_REMOVED,
+            sort_comparator=DEFAULT_SORT,
+            version_highlight=version_highlight,
+        )
+
+    if not any_changes:
+        print("No source changes.")
+
+    print(f"\nSources: {len(left_sources)} -> {len(right_sources)}.")
+
+def run_sources_collect(root, exclude, output, **_kwargs):
+    """Create a symlink directory tree of sources."""
+    root_path = str(Path(root).resolve())
+    sources = compute_sources(root_path, exclude or [])
+    out = Path(output)
+    out.mkdir(parents=True, exist_ok=False)
+    for s in sources:
+        parent_dir = out / s.parent
+        parent_dir.mkdir(parents=True, exist_ok=True)
+        link = parent_dir / s.name
+        if link.exists() or link.is_symlink():
+            print(f"WARNING: {link} already exists, skipping", file=sys.stderr)
+            continue
+        # For FODs, resolve the output path; for input_sources, use the store path directly
+        if s.kind == "fod":
+            drv_data = json.loads(subprocess.run(
+                [make_nix_bin_path("nix"), "derivation", "show", s.path]
+                + make_extra_experimental_features_args(),
+                stdout=PIPE, text=True, check=True,
+            ).stdout)
+            out_path = list(drv_data.values())[0]["outputs"]["out"]["path"]
+            link.symlink_to(out_path)
+        else:
+            link.symlink_to(s.path)
+
+def run_sources(action, **kwargs):
+    """Dispatch sources subcommands."""
+    {
+        "list": run_sources_list,
+        "diff": run_sources_diff,
+        "collect": run_sources_collect,
+    }[action](**kwargs)
+
+###############################################################################
+
 def parse_args():
     def add_selected_arg(p: argparse.ArgumentParser) -> None:
         p.add_argument(
@@ -1276,6 +1735,51 @@ def parse_args():
         help="Additionally list all packages in the first displayed profile."
     )
 
+    sources_parser = subparsers.add_parser(
+        "sources",
+        help="Analyze build-time source dependencies (.drv graph).")
+    sources_subparsers = sources_parser.add_subparsers(dest="sources_action")
+
+    sources_list_parser = sources_subparsers.add_parser(
+        "list",
+        help="List source dependencies of a derivation.")
+    sources_list_parser.add_argument(
+        "root",
+        help="The derivation (.drv) path to analyze.")
+    sources_list_parser.add_argument(
+        "--exclude", nargs="*", default=[],
+        help="Derivation paths whose transitive deps should be excluded.")
+    sources_list_parser.add_argument(
+        "--format", dest="output_format", default="tree",
+        choices=["tree", "json"],
+        help="Output format (default: tree).")
+
+    sources_diff_parser = sources_subparsers.add_parser(
+        "diff",
+        help="Diff source dependencies between two derivations.")
+    sources_diff_parser.add_argument(
+        "root1",
+        help="The first derivation (.drv) path.")
+    sources_diff_parser.add_argument(
+        "root2",
+        help="The second derivation (.drv) path.")
+    sources_diff_parser.add_argument(
+        "--exclude", nargs="*", default=[],
+        help="Derivation paths whose transitive deps should be excluded.")
+
+    sources_collect_parser = sources_subparsers.add_parser(
+        "collect",
+        help="Create a symlink tree of source dependencies.")
+    sources_collect_parser.add_argument(
+        "root",
+        help="The derivation (.drv) path to analyze.")
+    sources_collect_parser.add_argument(
+        "--exclude", nargs="*", default=[],
+        help="Derivation paths whose transitive deps should be excluded.")
+    sources_collect_parser.add_argument(
+        "-o", "--output", required=True,
+        help="Output directory for the symlink tree.")
+
     return parser.parse_args()
 
 def main():
@@ -1325,11 +1829,21 @@ def main():
     if Version("2.4") < query_nix_version():
         USE_NIX_COMMAND_FEATURE = True
 
-    {
-        "list": run_list,
-        "diff": run_diff,
-        "history": run_history,
-    }[action](**args)
+    if action == "sources":
+        sources_action = args.pop("sources_action", None)
+        if sources_action is None:
+            print("nvd sources: Subcommand required (list, diff, collect). See 'nvd sources --help'.")
+            sys.exit(1)
+        # Remove args not relevant to sources (keep version_highlight for diff)
+        for k in ["only_selected", "sort_comparator"]:
+            args.pop(k, None)
+        run_sources(action=sources_action, **args)
+    else:
+        {
+            "list": run_list,
+            "diff": run_diff,
+            "history": run_history,
+        }[action](**args)
 
 # Importing this module is kinda broken because of the constant initializations
 # at the top.
