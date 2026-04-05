@@ -565,6 +565,17 @@ class PackageListEntryCombinedComparator(PackageListEntryComparator):
     def reversed(self) -> PackageListEntryComparator:
         return PackageListEntryCombinedComparator(c.reversed() for c in self._comparators)
 
+NAME_VERSION_REGEX = re.compile(r"^(.+?)(-([0-9].*?))?$")
+
+def parse_name_version(name: str) -> tuple[str, Optional[str]]:
+    """Parse a package name like 'hello-2.12.1' into (pname, version).
+
+    Works on plain names without store path prefix.
+    """
+    match = NAME_VERSION_REGEX.search(name)
+    assert match is not None, f"Couldn't parse name: {name}"
+    return match.group(1), match.group(3)
+
 def parse_pname_version(path: str) -> tuple[str, Optional[str]]:
     base_path = str(StorePath(path).to_base_path().path())
 
@@ -1193,17 +1204,27 @@ def run_history(
 # Sources: build-time dependency (.drv graph) analysis
 ###############################################################################
 
+def _store_path_name(path: str) -> str:
+    """Extract name from a store path (strip hash prefix).
+
+    e.g. '/nix/store/abc...-hello-2.12.1.drv' -> 'hello-2.12.1.drv'
+    """
+    basename = path.rsplit("/", 1)[-1]
+    if len(basename) > 33 and basename[32] == "-":
+        return basename[33:]
+    return basename
+
 @dataclass
 class DrvInfo:
     """Parsed derivation metadata from `nix derivation show`."""
     path: str
     name: str
     builder: str
-    env: dict
-    outputs: dict
-    input_drvs: dict          # drv path -> {"outputs": [...]}
-    input_srcs: list          # plain store paths
-    structured_attrs: dict    # pre-parsed __json (if present)
+    env: dict[str, str]
+    outputs: dict[str, dict]
+    input_drvs: dict[str, dict]   # drv path -> {"outputs": [...]}
+    input_srcs: list[str]         # plain store paths
+    structured_attrs: dict        # pre-parsed __json (if present)
 
     def is_fod(self) -> bool:
         """A fixed-output derivation has a content hash on at least one output."""
@@ -1215,60 +1236,43 @@ class DrvInfo:
 
     def store_path_name(self) -> str:
         """The name part of the .drv store path (hash and .drv stripped)."""
-        basename = self.path.rsplit("/", 1)[-1]
-        # Strip 32-char hash + dash
-        after_hash = basename[33:] if len(basename) > 33 and basename[32] == "-" else basename
-        return after_hash.removesuffix(".drv")
+        return _store_path_name(self.path).removesuffix(".drv")
 
-
-def load_drv(drv_path: str) -> DrvInfo:
-    """Load a single derivation as a DrvInfo object."""
-    result = subprocess.run(
-        [make_nix_bin_path("nix"), "derivation", "show", drv_path]
-        + make_extra_experimental_features_args(),
-        stdout=PIPE, text=True, check=True,
-    )
-    raw = json.loads(result.stdout)
-    path, data = next(iter(raw.items()))
+def _parse_drv_json(path: str, data: dict) -> DrvInfo:
+    """Parse a single derivation from `nix derivation show` JSON."""
     return DrvInfo(
-            path=path,
-            name=data.get("name", ""),
-            builder=data.get("builder", ""),
-            env=data.get("env", {}),
-            outputs=data.get("outputs", {}),
-            input_drvs=data.get("inputDrvs", {}),
-            input_srcs=data.get("inputSrcs", []),
-            structured_attrs=data.get("structuredAttrs", {}),
-        )
+        path=path,
+        name=data.get("name", ""),
+        builder=data.get("builder", ""),
+        env=data.get("env", {}),
+        outputs=data.get("outputs", {}),
+        input_drvs=data.get("inputDrvs", {}),
+        input_srcs=data.get("inputSrcs", []),
+        structured_attrs=data.get("structuredAttrs", {}),
+    )
 
-def load_drv_graph(drv_path: str) -> dict:
+def load_drv_graph(drv_paths: Union[str, list[str]]) -> dict[str, DrvInfo]:
     """Load the full transitive .drv graph via `nix derivation show -r`.
-    Returns a dict mapping drv paths to DrvInfo objects."""
+
+    Accepts a single drv path or a list of paths (batched into one call).
+    Returns a dict mapping drv paths to DrvInfo objects.
+    """
+    if isinstance(drv_paths, str):
+        drv_paths = [drv_paths]
     result = subprocess.run(
-        [make_nix_bin_path("nix"), "derivation", "show", "-r", drv_path]
+        [make_nix_bin_path("nix"), "derivation", "show", "-r"]
+        + drv_paths
         + make_extra_experimental_features_args(),
         stdout=PIPE, text=True, check=True,
     )
     raw = json.loads(result.stdout)
-    drvs = {}
-    for path, data in raw.items():
-        drvs[path] = DrvInfo(
-            path=path,
-            name=data.get("name", ""),
-            builder=data.get("builder", ""),
-            env=data.get("env", {}),
-            outputs=data.get("outputs", {}),
-            input_drvs=data.get("inputDrvs", {}),
-            input_srcs=data.get("inputSrcs", []),
-            structured_attrs=data.get("structuredAttrs", {}),
-        )
-    return drvs
+    return {path: _parse_drv_json(path, data) for path, data in raw.items()}
 
 # FOD naming
 
 GENERIC_NAMES = frozenset(["source", "download", "patch"])
 
-def _repo_name_from_url(url: str):
+def _repo_name_from_url(url: str) -> Optional[str]:
     """Extract a repo/project name from a URL. Returns None if not possible."""
     parts = url.split("://", 1)
     if len(parts) < 2:
@@ -1280,7 +1284,7 @@ def _repo_name_from_url(url: str):
         return segments[2]
     return None
 
-def _fod_name_from_structured_attrs(sa: dict):
+def _fod_name_from_structured_attrs(sa: dict) -> Optional[str]:
     """Try to extract a descriptive name from structuredAttrs."""
     # fetchFromGitHub / fetchFromGitLab
     repo = sa.get("repo")
@@ -1304,8 +1308,8 @@ def fod_name(drv: DrvInfo) -> str:
     """Extract a descriptive name for a FOD.
 
     Naming strategies tried in order, skipping generic results:
-    1. builtin:fetchurl → env name (always descriptive)
-    2. structuredAttrs → repo/url extraction
+    1. builtin:fetchurl -> env name (always descriptive)
+    2. structuredAttrs -> repo/url extraction
     3. env name (if not generic)
     4. Store path name (universal fallback)
     """
@@ -1331,20 +1335,20 @@ def fod_name(drv: DrvInfo) -> str:
 # Graph walk with parent tracking
 
 def walk_drv_graph_with_parents(
-    drvs: dict,
+    drvs: dict[str, DrvInfo],
     root: str,
-) -> tuple:
+) -> tuple[set[str], dict[str, str]]:
     """BFS walk of the .drv graph. Returns (visited_set, parent_map).
 
     parent_map maps each drv path and input_source path to its nearest
     'package' ancestor name. A package is a non-FOD derivation with a
     version in its environment.
     """
-    visited = set()
-    parent_map = {}
+    visited: set[str] = set()
+    parent_map: dict[str, str] = {}
     root_drv = drvs.get(root)
-    root_name = root_drv.store_path_name() if root_drv else parse_pname_version(root)[0] or root
-    queue = deque([(root, root_name)])
+    root_name = root_drv.store_path_name() if root_drv else root
+    queue: deque[tuple[str, str]] = deque([(root, root_name)])
 
     while queue:
         drv_path, parent_name = queue.popleft()
@@ -1380,26 +1384,22 @@ def walk_drv_graph_with_parents(
 class SourceEntry:
     path: str
     name: str
-    kind: str     # "fod" or "input_source"
+    kind: str              # "fod" or "input_source"
     parent: str
-
-def _store_path_name(path: str) -> str:
-    """Extract name from a store path (strip hash prefix)."""
-    basename = path.rsplit("/", 1)[-1]
-    if len(basename) > 33 and basename[32] == "-":
-        return basename[33:]
-    return basename
+    parent_pname: str      # version-free parent name
+    parent_version: str    # parent version (may be empty)
+    output_path: str       # resolved output store path (for FODs)
 
 def collect_sources(
-    drvs: dict,
-    unique_drv_paths: set,
-    parent_map: dict,
+    drvs: dict[str, DrvInfo],
+    unique_drv_paths: set[str],
+    parent_map: dict[str, str],
     root_name: str,
-) -> list:
+) -> list[SourceEntry]:
     """Collect FOD sources and input_sources from unique derivations."""
-    sources = []
-    seen_outputs = set()
-    seen_input_srcs = set()
+    sources: list[SourceEntry] = []
+    seen_outputs: set[str] = set()
+    seen_input_srcs: set[str] = set()
 
     for drv_path in unique_drv_paths:
         drv = drvs.get(drv_path)
@@ -1407,6 +1407,7 @@ def collect_sources(
             continue
 
         parent = parent_map.get(drv_path, "")
+        ppname, pversion = parse_name_version(parent)
 
         # Collect FODs
         if drv.is_fod():
@@ -1416,7 +1417,9 @@ def collect_sources(
             if output_path and output_path not in seen_outputs:
                 seen_outputs.add(output_path)
                 sources.append(SourceEntry(
-                    path=drv_path, name=name, kind="fod", parent=parent))
+                    path=drv_path, name=name, kind="fod", parent=parent,
+                    parent_pname=ppname, parent_version=pversion or "",
+                    output_path=output_path))
 
         # Collect input_sources
         for src_path in drv.input_srcs:
@@ -1424,14 +1427,17 @@ def collect_sources(
                 seen_input_srcs.add(src_path)
                 src_name = _store_path_name(src_path)
                 src_parent = parent_map.get(src_path, parent)
+                sp_pname, sp_version = parse_name_version(src_parent)
                 sources.append(SourceEntry(
-                    path=src_path, name=src_name, kind="input_source", parent=src_parent))
+                    path=src_path, name=src_name, kind="input_source",
+                    parent=src_parent, parent_pname=sp_pname,
+                    parent_version=sp_version or "", output_path=src_path))
 
     # Sort by parent, kind, name, then store path name for stability
     sources.sort(key=lambda s: (s.parent, s.kind, s.name, _store_path_name(s.path)))
 
     # Disambiguate entries sharing the same parent/name
-    seen_keys = {}
+    seen_keys: dict[tuple[str, str], int] = {}
     for source in sources:
         key = (source.parent, source.name)
         count = seen_keys.get(key, 0)
@@ -1447,25 +1453,36 @@ def collect_sources(
 
     return sources
 
-def compute_sources(drv_path: str, exclude_drvs: list) -> list:
+def _resolve_drv_path(path: str) -> str:
+    """Resolve a store path to its .drv path if needed."""
+    if path.endswith(".drv"):
+        return path
+    result = subprocess.run(
+        [make_nix_bin_path("nix"), "derivation", "show", path]
+        + make_extra_experimental_features_args(),
+        stdout=PIPE, text=True, check=True,
+    )
+    drv_path = next(iter(json.loads(result.stdout).keys()))
+    print(f"Resolved {path} to {drv_path}", file=sys.stderr)
+    return drv_path
+
+def compute_sources(drv_path: str, exclude_drvs: list[str]) -> list[SourceEntry]:
     """Full pipeline: load graph, walk, exclude, collect sources."""
-    if not drv_path.endswith(".drv"):
-        resolved_drv_path = load_drv(drv_path).path
-        print(f"WARNING: {drv_path} is not a derivation, using {resolved_drv_path} instead", file=sys.stderr)
-        drv_path = resolved_drv_path
+    drv_path = _resolve_drv_path(drv_path)
     print(f"Loading target graph: {drv_path}", file=sys.stderr)
     drvs = load_drv_graph(drv_path)
     print(f"  {len(drvs)} derivations", file=sys.stderr)
 
     visited, parent_map = walk_drv_graph_with_parents(drvs, drv_path)
 
-    # Build exclusion set
-    exclude_set = set()
-    for exc in exclude_drvs:
-        print(f"Loading exclude graph: {exc}", file=sys.stderr)
-        exc_drvs = load_drv_graph(exc)
-        print(f"  {len(exc_drvs)} derivations", file=sys.stderr)
-        exclude_set.update(exc_drvs.keys())
+    # Build exclusion set (single batched call for all excludes)
+    exclude_set: set[str] = set()
+    if exclude_drvs:
+        for exc in exclude_drvs:
+            print(f"Loading exclude graph: {exc}", file=sys.stderr)
+        exc_drvs = load_drv_graph(exclude_drvs)
+        print(f"  {len(exc_drvs)} derivations total", file=sys.stderr)
+        exclude_set = set(exc_drvs.keys())
 
     unique = visited - exclude_set
     print(f"{len(unique)} unique derivations after exclusion", file=sys.stderr)
@@ -1481,7 +1498,7 @@ def compute_sources(drv_path: str, exclude_drvs: list) -> list:
 
 # Sources subcommands
 
-def run_sources_list(root, exclude, output_format, **_kwargs):
+def run_sources_list(root: str, exclude: list[str], output_format: str, **_kwargs) -> None:
     """List sources for a single derivation."""
     root_path = str(Path(root).resolve())
     sources = compute_sources(root_path, exclude or [])
@@ -1500,32 +1517,33 @@ def run_sources_list(root, exclude, output_format, **_kwargs):
             kind_color = SGR_FG + SGR_CYAN if s.kind == "fod" else SGR_FG + SGR_YELLOW
             print(f"  {sgr(kind_color)}{s.kind:14s}{sgr(SGR_RESET)} {s.name}")
 
-def _sources_to_package_set(sources: list) -> PackageSet:
+def _sources_to_package_set(sources: list[SourceEntry]) -> PackageSet:
     """Build a PackageSet from source entries, using parent names as packages.
 
     Each unique parent name becomes a Package with pname and version
-    extracted via parse_pname_version(). This allows reusing nvd's
-    existing version comparison and display logic.
+    extracted from the pre-computed parent_pname/parent_version fields.
     """
-    seen_parents = {}
+    seen_parents: dict[str, SourceEntry] = {}
     for s in sources:
         if s.parent not in seen_parents:
             seen_parents[s.parent] = s
 
-    packages = []
-    store_paths = []
+    packages: list[Package] = []
+    store_paths: list[str] = []
     for parent, example_source in seen_parents.items():
-        pname, version = parse_pname_version(f"/nix/store/00000000000000000000000000000000-{parent}")
         packages.append(Package(
-            pname=pname,
-            version=Version(version),
+            pname=example_source.parent_pname,
+            version=Version(example_source.parent_version),
             store_path=StorePath(example_source.path),
         ))
         store_paths.append(example_source.path)
 
     return PackageSet(packages, store_paths)
 
-def run_sources_diff(root1, root2, exclude, version_highlight=VERSION_HIGHLIGHT_DEFAULT, **_kwargs):
+def run_sources_diff(
+    root1: str, root2: str, exclude: list[str],
+    version_highlight: str = VERSION_HIGHLIGHT_DEFAULT, **_kwargs,
+) -> None:
     """Diff sources between two derivations.
 
     Uses nvd's package-level diffing (by pname) to match parents across
@@ -1542,7 +1560,7 @@ def run_sources_diff(root1, root2, exclude, version_highlight=VERSION_HIGHLIGHT_
     right_pnames = set(right_pkg_set.all_pnames())
     pnames_in_both = left_pnames & right_pnames
 
-    version_changed = []
+    version_changed: list[str] = []
     for pname in pnames_in_both:
         if left_pkg_set.get_pname_versions(pname) != right_pkg_set.get_pname_versions(pname):
             version_changed.append(pname)
@@ -1551,11 +1569,10 @@ def run_sources_diff(root1, root2, exclude, version_highlight=VERSION_HIGHLIGHT_
     removed_pnames = sorted(left_pnames - right_pnames)
 
     # Group sources by parent pname for per-source detail
-    def group_by_parent_pname(sources):
-        groups = {}
+    def group_by_parent_pname(sources: list[SourceEntry]) -> dict[str, dict[str, SourceEntry]]:
+        groups: dict[str, dict[str, SourceEntry]] = {}
         for s in sources:
-            pname, _ = parse_pname_version(f"/nix/store/00000000000000000000000000000000-{s.parent}")
-            groups.setdefault(pname, {})[s.name] = s
+            groups.setdefault(s.parent_pname, {})[s.name] = s
         return groups
 
     left_groups = group_by_parent_pname(left_sources)
@@ -1588,7 +1605,7 @@ def run_sources_diff(root1, root2, exclude, version_highlight=VERSION_HIGHLIGHT_
             right_srcs = right_groups.get(pname, {})
             all_names = sorted(set(left_srcs) | set(right_srcs))
 
-            details = []
+            details: list[str] = []
             for name in all_names:
                 ls = left_srcs.get(name)
                 rs = right_srcs.get(name)
@@ -1635,7 +1652,7 @@ def run_sources_diff(root1, root2, exclude, version_highlight=VERSION_HIGHLIGHT_
 
     print(f"\nSources: {len(left_sources)} -> {len(right_sources)}.")
 
-def run_sources_collect(root, exclude, output, **_kwargs):
+def run_sources_collect(root: str, exclude: list[str], output: str, **_kwargs) -> None:
     """Create a symlink directory tree of sources."""
     root_path = str(Path(root).resolve())
     sources = compute_sources(root_path, exclude or [])
@@ -1648,15 +1665,9 @@ def run_sources_collect(root, exclude, output, **_kwargs):
         if link.exists() or link.is_symlink():
             print(f"WARNING: {link} already exists, skipping", file=sys.stderr)
             continue
-        # For FODs, resolve the output path; for input_sources, use the store path directly
-        if s.kind == "fod":
-            drv_data = load_drv(s.path)
-            out_path = drv_data.outputs["out"]["path"]
-            link.symlink_to(out_path)
-        else:
-            link.symlink_to(s.path)
+        link.symlink_to(s.output_path)
 
-def run_sources(action, **kwargs):
+def run_sources(action: str, **kwargs) -> None:
     """Dispatch sources subcommands."""
     {
         "list": run_sources_list,
