@@ -721,6 +721,7 @@ def print_packages(
         )
         count_str = count_format_str.format(count)
         pname_str = pname_format_str.format(pname)
+        # TODO: add --store-paths option to use the store paths instead of pnames here
         print("{}  {}  {}  {}{}".format(
             status_str,
             count_str,
@@ -1219,6 +1220,27 @@ class DrvInfo:
         after_hash = basename[33:] if len(basename) > 33 and basename[32] == "-" else basename
         return after_hash.removesuffix(".drv")
 
+
+def load_drv(drv_path: str) -> DrvInfo:
+    """Load a single derivation as a DrvInfo object."""
+    result = subprocess.run(
+        [make_nix_bin_path("nix"), "derivation", "show", drv_path]
+        + make_extra_experimental_features_args(),
+        stdout=PIPE, text=True, check=True,
+    )
+    raw = json.loads(result.stdout)
+    path, data = next(iter(raw.items()))
+    return DrvInfo(
+            path=path,
+            name=data.get("name", ""),
+            builder=data.get("builder", ""),
+            env=data.get("env", {}),
+            outputs=data.get("outputs", {}),
+            input_drvs=data.get("inputDrvs", {}),
+            input_srcs=data.get("inputSrcs", []),
+            structured_attrs=data.get("structuredAttrs", {}),
+        )
+
 def load_drv_graph(drv_path: str) -> dict:
     """Load the full transitive .drv graph via `nix derivation show -r`.
     Returns a dict mapping drv paths to DrvInfo objects."""
@@ -1417,7 +1439,7 @@ def collect_sources(
             if source.parent != root_name:
                 print(
                     f"WARNING: {source.parent}/{source.name} has duplicates "
-                    f"(#{count}) — path: {source.path} kind: {source.kind}",
+                    f"(#{count}) path: {source.path} kind: {source.kind}",
                     file=sys.stderr,
                 )
             source.name = f"{source.name}.{count}"
@@ -1427,6 +1449,10 @@ def collect_sources(
 
 def compute_sources(drv_path: str, exclude_drvs: list) -> list:
     """Full pipeline: load graph, walk, exclude, collect sources."""
+    if not drv_path.endswith(".drv"):
+        resolved_drv_path = load_drv(drv_path).path
+        print(f"WARNING: {drv_path} is not a derivation, using {resolved_drv_path} instead", file=sys.stderr)
+        drv_path = resolved_drv_path
     print(f"Loading target graph: {drv_path}", file=sys.stderr)
     drvs = load_drv_graph(drv_path)
     print(f"  {len(drvs)} derivations", file=sys.stderr)
@@ -1624,12 +1650,8 @@ def run_sources_collect(root, exclude, output, **_kwargs):
             continue
         # For FODs, resolve the output path; for input_sources, use the store path directly
         if s.kind == "fod":
-            drv_data = json.loads(subprocess.run(
-                [make_nix_bin_path("nix"), "derivation", "show", s.path]
-                + make_extra_experimental_features_args(),
-                stdout=PIPE, text=True, check=True,
-            ).stdout)
-            out_path = list(drv_data.values())[0]["outputs"]["out"]["path"]
+            drv_data = load_drv(s.path)
+            out_path = drv_data.outputs["out"]["path"]
             link.symlink_to(out_path)
         else:
             link.symlink_to(s.path)
