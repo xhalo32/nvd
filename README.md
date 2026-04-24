@@ -56,14 +56,7 @@ To do this, one needs to get the stdenv from the same nixpkgs.
     Loading exclude graph: /nix/store/y4zk72najykpa9lbjjj7gcvqxwncq8xb-stdenv-linux.drv
       246 derivations total
     29 unique derivations after exclusion
-    49 sources (9 FODs, 40 input_sources)
-    
-    bash-5.2p37
-      input_source   separate-debug-info.sh
-    
-    bootstrap-stage4-gcc-wrapper-14.2.1.20250322
-      input_source   role.bash
-      input_source   utils.bash
+    19 sources (9 FODs, 10 input_sources)
     
     byacc-20241231
       fod            byacc-20241231.tgz
@@ -71,33 +64,34 @@ To do this, one needs to get the stdenv from the same nixpkgs.
     curl-8.12.1
       fod            curl-8.12.1.tar.xz
     
-    gzip-1.13
-      input_source   die.sh
-    
     hello-2.12.1
       fod            hello-2.12.1.tar.gz
-      input_source   audit-tmpdir.sh
       input_source   builder.sh
-      input_source   builder.sh.1
-      input_source   compress-man-pages.sh
-      input_source   default-builder.sh
       input_source   hook.sh
-      input_source   make-symlinks-relative.sh
-      input_source   move-docs.sh
-      input_source   move-lib64.sh
-      input_source   move-sbin.sh
-      input_source   move-systemd-user-units.sh
-      input_source   multiple-outputs.sh
-      input_source   no-broken-symlinks.sh
-      input_source   patch-shebangs.sh
-      input_source   prune-libtool-files.sh
-      input_source   reproducible-builds.sh
-      input_source   set-source-date-epoch-to-latest.sh
-      input_source   setup.sh
-      input_source   source-stdenv.sh
-      input_source   strip.sh
       input_source   write-mirror-list.sh
-    ...
+    
+    keyutils-1.6.3
+      fod            keyutils-1.6.3.tar.gz
+      fod            raw
+      input_source   0001-Remove-unused-function-after_eq.patch
+      input_source   conf-symlink.patch
+      input_source   pkg-config-static.patch
+    
+    krb5-1.21.3
+      fod            krb5-1.21.3.tar.gz
+    
+    libssh2-1.11.1
+      fod            libssh2-1.11.1.tar.gz
+    
+    nghttp2-1.65.0
+      fod            nghttp2-1.65.0.tar.bz2
+    
+    openssl-3.4.1
+      fod            openssl-3.4.1.tar.gz
+      input_source   make-binary-wrapper.sh
+      input_source   nix-ssl-cert-file.patch
+      input_source   openssl-disable-kernel-detection.patch
+      input_source   use-etc-ssl-certs.patch
 
 To analyze differences in the sources of two versions of a package, e.g. `hello:2.12.1` and `hello:2.12.2`, the `nvd sources diff` tool is provided.
 Here, we exclude the stdenv graphs of both nixpkgs versions
@@ -109,38 +103,29 @@ Here, we exclude the stdenv graphs of both nixpkgs versions
     Loading exclude graph: /nix/store/ljjhsmahjyc0l49q4v21mkzrhn2p24ra-stdenv-linux.drv
       402 derivations total
     29 unique derivations after exclusion
-    49 sources (9 FODs, 40 input_sources)
+    19 sources (9 FODs, 10 input_sources)
     Loading target graph: /nix/store/ljxsxdy1syy03b9kfnnh8x7zsk21fdcq-hello-2.12.2.drv
       275 derivations
     Loading exclude graph: /nix/store/y4zk72najykpa9lbjjj7gcvqxwncq8xb-stdenv-linux.drv
     Loading exclude graph: /nix/store/ljjhsmahjyc0l49q4v21mkzrhn2p24ra-stdenv-linux.drv
       402 derivations total
     29 unique derivations after exclusion
-    50 sources (9 FODs, 41 input_sources)
+    20 sources (9 FODs, 11 input_sources)
     <<< /nix/store/iqbwkm8mjjjlmw6x6ry9rhzin2cp9372-hello-2.12.1.drv
     >>> /nix/store/ljxsxdy1syy03b9kfnnh8x7zsk21fdcq-hello-2.12.2.drv
-    
+
     Version changes:
     [U]  #1  curl   8.12.1 -> 8.13.0
-    [U]  #2  gzip   1.13 -> 1.14
-    [U]  #3  hello  2.12.1 -> 2.12.2
+    [U]  #2  hello  2.12.1 -> 2.12.2
       curl:
         + 0001-http2-fix-stream-window-size-after-unpausing.patch
         - curl-8.12.1.tar.xz
         + curl-8.13.0.tar.xz
       hello:
-        ~ builder.sh
-        ~ builder.sh.1
         - hello-2.12.1.tar.gz
         + hello-2.12.2.tar.gz
-    
-    Added packages:
-    [A]  #1  gcc-wrapper  14.2.1.20250322
-    
-    Removed packages:
-    [R]  #1  bootstrap-stage4-gcc-wrapper  14.2.1.20250322
-    
-    Sources: 49 -> 50.
+
+    Sources: 19 -> 20.
 
 To examine all sources closely, one can use `nvd sources collect` to create a directory structure that contains sources of the package as symbolic links to the nix store
 
@@ -150,7 +135,7 @@ To examine all sources closely, one can use `nvd sources collect` to create a di
     Loading exclude graph: /nix/store/y4zk72najykpa9lbjjj7gcvqxwncq8xb-stdenv-linux.drv
       246 derivations total
     29 unique derivations after exclusion
-    49 sources (9 FODs, 40 input_sources)
+    19 sources (9 FODs, 10 input_sources)
 
 Note that currently non-file-like sources like environment variables that are part of a derivation are not collect nor detected by the list/diff tools.
 

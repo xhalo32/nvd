@@ -75,10 +75,16 @@ pkgs.testers.runNixOSTest {
         assert len(sources) > 0, "Must have at least one source"
 
         for s in sources:
-            assert "path" in s, f"Missing 'path' in {s}"
-            assert "name" in s, f"Missing 'name' in {s}"
-            assert "kind" in s, f"Missing 'kind' in {s}"
-            assert "parent" in s, f"Missing 'parent' in {s}"
+            for field in ("path", "name", "kind", "parent",
+                          "output_path", "fod_hash_algo", "fod_hash"):
+                assert field in s, f"Missing {field!r} in {s}"
+            assert s["output_path"].startswith("/nix/store/"), \
+                f"output_path must be a store path: {s}"
+            if s["kind"] == "fod":
+                assert s["fod_hash"], f"FOD must have a hash: {s}"
+                assert s["fod_hash_algo"], f"FOD must have a hash algo: {s}"
+            else:
+                assert s["fod_hash"] is None, f"input_source must not have a hash: {s}"
 
         names = [s["name"] for s in sources]
         assert "hello-2.12.1.tar.gz" in names, f"Missing hello tarball in {names}"
@@ -89,6 +95,34 @@ pkgs.testers.runNixOSTest {
 
         parents = set(s["parent"] for s in sources)
         assert "hello-2.12.1" in parents, f"Missing hello-2.12.1 parent in {parents}"
+
+    ## Test: nix-instantiate '!output' suffix is handled
+    with subtest("sources list accepts drv!output suffix"):
+        # Multi-output drv from nix-instantiate -A prints drv.drv!out by default.
+        machine.succeed(
+            f"nvd sources list {hello1}!out --exclude {stdenv1} "
+            f"--format json >/dev/null 2>&1"
+        )
+
+    ## Test: content-based exclusion (byte-identical sources filtered)
+    with subtest("sources list --exclude drops byte-identical content"):
+        # Excluding hello1 while listing hello2 should filter input_sources
+        # and FOD outputs whose store paths match hello1's — content-addressed
+        # files (builder.sh, default-builder.sh) survive the outer drv rebase
+        # with the same store path. Drv-path-only exclusion would let them
+        # leak through as false-positive "new" entries.
+        hello2_sources = json.loads(machine.succeed(
+            f"nvd sources list {hello2} --exclude {hello1} --format json 2>/dev/null"
+        ))
+        leaked = [
+            s for s in hello2_sources
+            if s["kind"] == "input_source"
+            and s["output_path"].endswith(("-builder.sh", "-default-builder.sh"))
+        ]
+        assert not leaked, (
+            f"Content-identical input_sources leaked past --exclude: "
+            f"{[s['output_path'] for s in leaked]}"
+        )
 
     ## Test: sources list (tree)
     with subtest("sources list tree"):

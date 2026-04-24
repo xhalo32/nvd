@@ -1499,14 +1499,26 @@ class SourceEntry:
     parent_pname: str      # version-free parent name
     parent_version: str    # parent version (may be empty)
     output_path: str       # resolved output store path (for FODs)
+    fod_hash_algo: str = ""  # e.g. "sha256" for FODs, "" for input_sources
+    fod_hash: str = ""       # declared FOD hash, "" for input_sources
 
 def collect_sources(
     drvs: dict[str, DrvInfo],
     unique_drv_paths: set[str],
     parent_map: dict[str, str],
     root_name: str,
+    exclude_fod_outputs: Optional[set[str]] = None,
+    exclude_input_srcs: Optional[set[str]] = None,
 ) -> list[SourceEntry]:
-    """Collect FOD sources and input_sources from unique derivations."""
+    """Collect FOD sources and input_sources from unique derivations.
+
+    Content-based exclusion filters apply on top of the drv-path-based
+    exclusion encoded in unique_drv_paths: a FOD output path or input_src
+    that appears in the exclude graph is dropped even if its referring
+    drv is "new" (the outer drv churns on rebase while the content doesn't).
+    """
+    excl_fod = exclude_fod_outputs or set()
+    excl_is = exclude_input_srcs or set()
     sources: list[SourceEntry] = []
     seen_outputs: set[str] = set()
     seen_input_srcs: set[str] = set()
@@ -1524,38 +1536,46 @@ def collect_sources(
             name = fod_name(drv)
             out = drv.outputs.get("out", {})
             output_path = out.get("path", "")
-            if output_path and output_path not in seen_outputs:
+            if (output_path
+                    and output_path not in seen_outputs
+                    and output_path not in excl_fod):
                 seen_outputs.add(output_path)
                 sources.append(SourceEntry(
                     path=drv_path, name=name, kind="fod", parent=parent,
                     parent_pname=ppname, parent_version=pversion or "",
-                    output_path=output_path))
+                    output_path=output_path,
+                    fod_hash_algo=out.get("hashAlgo", ""),
+                    fod_hash=out.get("hash", "")))
 
         # Collect input_sources
         for src_path in drv.input_srcs:
-            if src_path not in seen_input_srcs:
-                seen_input_srcs.add(src_path)
-                src_name = _store_path_name(src_path)
-                src_parent = parent_map.get(src_path, parent)
-                sp_pname, sp_version = parse_name_version(src_parent)
-                sources.append(SourceEntry(
-                    path=src_path, name=src_name, kind="input_source",
-                    parent=src_parent, parent_pname=sp_pname,
-                    parent_version=sp_version or "", output_path=src_path))
+            if src_path in seen_input_srcs or src_path in excl_is:
+                continue
+            seen_input_srcs.add(src_path)
+            src_name = _store_path_name(src_path)
+            src_parent = parent_map.get(src_path, parent)
+            sp_pname, sp_version = parse_name_version(src_parent)
+            sources.append(SourceEntry(
+                path=src_path, name=src_name, kind="input_source",
+                parent=src_parent, parent_pname=sp_pname,
+                parent_version=sp_version or "", output_path=src_path))
 
     # Sort by parent, kind, name, then store path name for stability
     sources.sort(key=lambda s: (s.parent, s.kind, s.name, _store_path_name(s.path)))
 
-    # Disambiguate entries sharing the same parent/name
+    # Disambiguate entries sharing the same parent/name. Input-source
+    # filename collisions (e.g. several patches named the same) are common
+    # and cosmetic — silently suffix them. FOD collisions usually mean
+    # fod_name fell back to a generic token, which is worth surfacing.
     seen_keys: dict[tuple[str, str], int] = {}
     for source in sources:
         key = (source.parent, source.name)
         count = seen_keys.get(key, 0)
         if count > 0:
-            if source.parent != root_name:
+            if source.parent != root_name and source.kind == "fod":
                 print(
-                    f"WARNING: {source.parent}/{source.name} has duplicates "
-                    f"(#{count}) path: {source.path} kind: {source.kind}",
+                    f"WARNING: {source.parent}/{source.name} has duplicate FODs "
+                    f"(#{count}) path: {source.path}",
                     file=sys.stderr,
                 )
             source.name = f"{source.name}.{count}"
@@ -1570,6 +1590,12 @@ def _normalize_input_path(root: str) -> str:
     (e.g. 'xxx-hello.drv') as a cwd-relative absolute path, which is wrong.
     Only resolve when the input refers to something on the filesystem.
     """
+    # Strip Nix's output selector (e.g. 'foo.drv!bin' from nix-instantiate
+    # on multi-output drvs). Guarded by '.drv' so an unrelated '!' passes through.
+    if "!" in root:
+        head, _, _ = root.partition("!")
+        if head.endswith(".drv"):
+            root = head
     p = Path(root)
     if p.exists() or p.is_symlink():
         return str(p.resolve())
@@ -1603,8 +1629,12 @@ def compute_sources(drv_path: str, exclude_drvs: list[str]) -> list[SourceEntry]
 
     visited, parent_map = walk_drv_graph_with_parents(drvs, drv_path)
 
-    # Build exclusion set
+    # Build exclusion sets. Drv-path exclusion alone produces false-positive
+    # "new" sources: the outer drv gets a new hash on rebase but its
+    # content-addressed FOD outputs and input_src store paths don't.
     exclude_set: set[str] = set()
+    exclude_fod_outputs: set[str] = set()
+    exclude_input_srcs: set[str] = set()
     if exclude_drvs:
         resolved_excludes = [_resolve_drv_path(_normalize_input_path(e)) for e in exclude_drvs]
         for exc in resolved_excludes:
@@ -1612,12 +1642,23 @@ def compute_sources(drv_path: str, exclude_drvs: list[str]) -> list[SourceEntry]
         exc_drvs = load_drv_graph(resolved_excludes)
         print(f"  {len(exc_drvs)} derivations total", file=sys.stderr)
         exclude_set = set(exc_drvs.keys())
+        for exc_drv in exc_drvs.values():
+            if exc_drv.is_fod():
+                for out in exc_drv.outputs.values():
+                    out_path = out.get("path", "")
+                    if out_path:
+                        exclude_fod_outputs.add(out_path)
+            exclude_input_srcs.update(exc_drv.input_srcs)
 
     unique = visited - exclude_set
     print(f"{len(unique)} unique derivations after exclusion", file=sys.stderr)
 
     root_name = drvs[drv_path].store_path_name() if drv_path in drvs else drv_path
-    sources = collect_sources(drvs, unique, parent_map, root_name)
+    sources = collect_sources(
+        drvs, unique, parent_map, root_name,
+        exclude_fod_outputs=exclude_fod_outputs,
+        exclude_input_srcs=exclude_input_srcs,
+    )
 
     fod_count = sum(1 for s in sources if s.kind == "fod")
     is_count = sum(1 for s in sources if s.kind == "input_source")
@@ -1632,8 +1673,15 @@ def run_sources_list(root: str, exclude: list[str], output_format: str, **_kwarg
     sources = compute_sources(root, exclude or [])
 
     if output_format == "json":
-        entries = [{"path": s.path, "name": s.name, "kind": s.kind, "parent": s.parent}
-                   for s in sources]
+        entries = [{
+            "path": s.path,
+            "name": s.name,
+            "kind": s.kind,
+            "parent": s.parent,
+            "output_path": s.output_path,
+            "fod_hash_algo": s.fod_hash_algo or None,
+            "fod_hash": s.fod_hash or None,
+        } for s in sources]
         print(json.dumps(entries, indent=2))
     else:
         # Tree output grouped by parent
