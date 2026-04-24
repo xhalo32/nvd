@@ -6,11 +6,17 @@
 #
 # Run with: nix-build tests/sources.nix
 {
-  pkgs ? import <nixpkgs> { },
+  sources ? import ../npins,
+  system ? builtins.currentSystem,
+  pkgs ? import sources.nixpkgs {
+    inherit system;
+    config = { };
+    overlays = [ ];
+  },
 }:
 
 let
-  nvd = import ../default.nix { inherit pkgs; };
+  nvd = (import ../default.nix { inherit pkgs; }).package;
 
   # Pinned nixpkgs tarballs — hello 2.12.1 and 2.12.2
   pin1 = builtins.fetchTarball {
@@ -25,11 +31,19 @@ in
 pkgs.testers.runNixOSTest {
   name = "nvd-sources";
 
-  nodes.machine = { pkgs, ... }: {
-    environment.systemPackages = [ nvd pkgs.jq ];
-    nix.settings.experimental-features = [ "nix-command" ];
-    virtualisation.additionalPaths = [ pin1 pin2 ];
-  };
+  nodes.machine =
+    { pkgs, ... }:
+    {
+      environment.systemPackages = [
+        nvd
+        pkgs.jq
+      ];
+      nix.settings.experimental-features = [ "nix-command" ];
+      virtualisation.additionalPaths = [
+        pin1
+        pin2
+      ];
+    };
 
   testScript = ''
     import json

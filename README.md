@@ -44,6 +44,116 @@ the list:
     [A+]  #1  bpytop  1.0.50
     Closure size: 2205 -> 2206 (38 paths added, 37 paths removed, delta +1).
 
+## Derivation graph and build-time source analysis
+
+To list and analyze sources of a package, `nvd sources list` is the right tool.
+It's recommended to exclude irrelevant subgraphs, e.g. stdenv.
+To do this, one needs to get the stdenv from the same nixpkgs.
+
+    $ nvd sources list $(nix-instantiate -E '(import ./examples/hello1.nix).package') --exclude $(nix-instantiate -E '(import ./examples/hello1.nix).stdenv')
+    Loading target graph: /nix/store/iqbwkm8mjjjlmw6x6ry9rhzin2cp9372-hello-2.12.1.drv
+      275 derivations
+    Loading exclude graph: /nix/store/y4zk72najykpa9lbjjj7gcvqxwncq8xb-stdenv-linux.drv
+      246 derivations total
+    29 unique derivations after exclusion
+    49 sources (9 FODs, 40 input_sources)
+    
+    bash-5.2p37
+      input_source   separate-debug-info.sh
+    
+    bootstrap-stage4-gcc-wrapper-14.2.1.20250322
+      input_source   role.bash
+      input_source   utils.bash
+    
+    byacc-20241231
+      fod            byacc-20241231.tgz
+    
+    curl-8.12.1
+      fod            curl-8.12.1.tar.xz
+    
+    gzip-1.13
+      input_source   die.sh
+    
+    hello-2.12.1
+      fod            hello-2.12.1.tar.gz
+      input_source   audit-tmpdir.sh
+      input_source   builder.sh
+      input_source   builder.sh.1
+      input_source   compress-man-pages.sh
+      input_source   default-builder.sh
+      input_source   hook.sh
+      input_source   make-symlinks-relative.sh
+      input_source   move-docs.sh
+      input_source   move-lib64.sh
+      input_source   move-sbin.sh
+      input_source   move-systemd-user-units.sh
+      input_source   multiple-outputs.sh
+      input_source   no-broken-symlinks.sh
+      input_source   patch-shebangs.sh
+      input_source   prune-libtool-files.sh
+      input_source   reproducible-builds.sh
+      input_source   set-source-date-epoch-to-latest.sh
+      input_source   setup.sh
+      input_source   source-stdenv.sh
+      input_source   strip.sh
+      input_source   write-mirror-list.sh
+    ...
+
+To analyze differences in the sources of two versions of a package, e.g. `hello:2.12.1` and `hello:2.12.2`, the `nvd sources diff` tool is provided.
+Here, we exclude the stdenv graphs of both nixpkgs versions
+
+    $ nvd sources diff $(nix-instantiate -E '(import ./examples/hello1.nix).package') $(nix-instantiate -E '(import ./examples/hello2.nix).package') --exclude $(nix-instantiate -E '(import ./examples/hello1.nix).stdenv') $(nix-instantiate -E '(import ./examples/hello2.nix).stdenv')
+    Loading target graph: /nix/store/iqbwkm8mjjjlmw6x6ry9rhzin2cp9372-hello-2.12.1.drv
+      275 derivations
+    Loading exclude graph: /nix/store/y4zk72najykpa9lbjjj7gcvqxwncq8xb-stdenv-linux.drv
+    Loading exclude graph: /nix/store/ljjhsmahjyc0l49q4v21mkzrhn2p24ra-stdenv-linux.drv
+      402 derivations total
+    29 unique derivations after exclusion
+    49 sources (9 FODs, 40 input_sources)
+    Loading target graph: /nix/store/ljxsxdy1syy03b9kfnnh8x7zsk21fdcq-hello-2.12.2.drv
+      275 derivations
+    Loading exclude graph: /nix/store/y4zk72najykpa9lbjjj7gcvqxwncq8xb-stdenv-linux.drv
+    Loading exclude graph: /nix/store/ljjhsmahjyc0l49q4v21mkzrhn2p24ra-stdenv-linux.drv
+      402 derivations total
+    29 unique derivations after exclusion
+    50 sources (9 FODs, 41 input_sources)
+    <<< /nix/store/iqbwkm8mjjjlmw6x6ry9rhzin2cp9372-hello-2.12.1.drv
+    >>> /nix/store/ljxsxdy1syy03b9kfnnh8x7zsk21fdcq-hello-2.12.2.drv
+    
+    Version changes:
+    [U]  #1  curl   8.12.1 -> 8.13.0
+    [U]  #2  gzip   1.13 -> 1.14
+    [U]  #3  hello  2.12.1 -> 2.12.2
+      curl:
+        + 0001-http2-fix-stream-window-size-after-unpausing.patch
+        - curl-8.12.1.tar.xz
+        + curl-8.13.0.tar.xz
+      hello:
+        ~ builder.sh
+        ~ builder.sh.1
+        - hello-2.12.1.tar.gz
+        + hello-2.12.2.tar.gz
+    
+    Added packages:
+    [A]  #1  gcc-wrapper  14.2.1.20250322
+    
+    Removed packages:
+    [R]  #1  bootstrap-stage4-gcc-wrapper  14.2.1.20250322
+    
+    Sources: 49 -> 50.
+
+To examine all sources closely, one can use `nvd sources collect` to create a directory structure that contains sources of the package as symbolic links to the nix store
+
+    nvd sources collect $(nix-instantiate -E '(import ./examples/hello1.nix).package') --exclude $(nix-instantiate -E '(import ./examples/hello1.nix).stdenv') -o hello1sources
+    Loading target graph: /nix/store/iqbwkm8mjjjlmw6x6ry9rhzin2cp9372-hello-2.12.1.drv
+      275 derivations
+    Loading exclude graph: /nix/store/y4zk72najykpa9lbjjj7gcvqxwncq8xb-stdenv-linux.drv
+      246 derivations total
+    29 unique derivations after exclusion
+    49 sources (9 FODs, 40 input_sources)
+
+Note that currently non-file-like sources like environment variables that are part of a derivation are not collect nor detected by the list/diff tools.
+
 ## License
 
 Licensed under the Apache License, Version 2.0 (the "License");
