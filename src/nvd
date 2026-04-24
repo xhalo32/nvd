@@ -813,6 +813,11 @@ def find_common_version_prefix_lists(*lsts: list[str]) -> int:
     return i
 
 def query_closure_disk_usage_bytes(target: Path) -> Optional[int]:
+    # TODO: this is the last remaining use of the new-style `nix <subcommand>`
+    # CLI in nvd (and therefore the last user of USE_NIX_COMMAND_FEATURE /
+    # make_extra_experimental_features_args). It could be replaced with
+    # `nix-store -qR <path>` + summed `nix-store -q --size` to drop the
+    # feature flag entirely, but is inherited from upstream and still works.
     # If we don't add "./" to relative paths, then newer nix will interpret the
     # argument as something related to flakes instead.
     target_str = str(target)
@@ -1216,7 +1221,7 @@ def _store_path_name(path: str) -> str:
 
 @dataclass
 class DrvInfo:
-    """Parsed derivation metadata from `nix derivation show`."""
+    """Parsed derivation metadata, populated from the .drv file on disk."""
     path: str
     name: str
     builder: str
@@ -1238,35 +1243,140 @@ class DrvInfo:
         """The name part of the .drv store path (hash and .drv stripped)."""
         return _store_path_name(self.path).removesuffix(".drv")
 
-def _parse_drv_json(path: str, data: dict) -> DrvInfo:
-    """Parse a single derivation from `nix derivation show` JSON."""
+# ATerm parsing for .drv files. The format is stable and documented as part of
+# Nix's on-disk store format: Derive(outputs, inputDrvs, inputSrcs, system,
+# builder, args, env). Parsing directly avoids `nix derivation show`, whose
+# JSON schema has churned across Nix versions.
+
+_ATERM_ESCAPES = {ord("n"): b"\n", ord("r"): b"\r", ord("t"): b"\t"}
+
+# ATerm values: strings, lists of values, tuples of values, or (constructor_name, args_tuple).
+ATermValue = Union[str, list, tuple]
+
+def _aterm_parse_string(data: bytes, i: int) -> tuple[str, int]:
+    assert data[i:i+1] == b'"'
+    i += 1
+    out = bytearray()
+    while True:
+        c = data[i]
+        if c == 0x22:  # "
+            return out.decode("utf-8", errors="replace"), i + 1
+        if c == 0x5C:  # backslash
+            nxt = data[i + 1]
+            out += _ATERM_ESCAPES.get(nxt, bytes([nxt]))
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+
+def _aterm_parse(data: bytes, i: int) -> tuple[ATermValue, int]:
+    c = data[i:i+1]
+    if c == b'"':
+        return _aterm_parse_string(data, i)
+    if c == b"[":
+        items: list = []
+        i += 1
+        if data[i:i+1] == b"]":
+            return items, i + 1
+        while True:
+            v, i = _aterm_parse(data, i)
+            items.append(v)
+            if data[i:i+1] == b",":
+                i += 1
+                continue
+            assert data[i:i+1] == b"]", f"expected ']' at {i}, got {data[i:i+1]!r}"
+            return items, i + 1
+    if c == b"(":
+        items = []
+        i += 1
+        if data[i:i+1] == b")":
+            return tuple(items), i + 1
+        while True:
+            v, i = _aterm_parse(data, i)
+            items.append(v)
+            if data[i:i+1] == b",":
+                i += 1
+                continue
+            assert data[i:i+1] == b")", f"expected ')' at {i}"
+            return tuple(items), i + 1
+    # Constructor: Name(args)
+    j = i
+    while data[j:j+1].isalpha() or data[j:j+1].isdigit() or data[j:j+1] == b"_":
+        j += 1
+    name = data[i:j].decode("ascii")
+    assert data[j:j+1] == b"(", f"expected '(' after constructor {name!r} at {j}"
+    args, j = _aterm_parse(data, j)  # parses the tuple including parens
+    return (name, args), j
+
+def _parse_drv_file(path: str) -> DrvInfo:
+    """Parse a .drv file (ATerm) into a DrvInfo.
+
+    The dicts returned (`outputs`, `input_drvs`) mirror the shape previously
+    produced from `nix derivation show` JSON, so downstream consumers
+    (is_fod, fod_name, collect_sources, etc.) work unchanged.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    tree, end = _aterm_parse(data, 0)
+    if not (isinstance(tree, tuple) and len(tree) == 2 and tree[0] == "Derive"):
+        raise RuntimeError(
+            f"Unexpected top-level constructor in {path}: {tree[0] if isinstance(tree, tuple) else type(tree).__name__}. "
+            f"nvd only supports standard Derive(...) drv files.")
+    outputs_list, input_drvs_list, input_srcs, system, builder, args, env_list = tree[1]
+
+    outputs = {
+        name: {"path": out_path, "hashAlgo": hash_algo, "hash": hash_value}
+        for (name, out_path, hash_algo, hash_value) in outputs_list
+    }
+    input_drvs = {
+        drv_path: {"outputs": list(out_names)}
+        for (drv_path, out_names) in input_drvs_list
+    }
+    env: dict[str, str] = {k: v for (k, v) in env_list}
+    structured_attrs: dict = {}
+    if env.get("__structuredAttrs") == "1":
+        raw_json = env.get("__json", "")
+        if raw_json:
+            try:
+                structured_attrs = json.loads(raw_json)
+            except json.JSONDecodeError:
+                structured_attrs = {}
+
     return DrvInfo(
         path=path,
-        name=data.get("name", ""),
-        builder=data.get("builder", ""),
-        env=data.get("env", {}),
-        outputs=data.get("outputs", {}),
-        input_drvs=data.get("inputDrvs", {}),
-        input_srcs=data.get("inputSrcs", []),
-        structured_attrs=data.get("structuredAttrs", {}),
+        name=env.get("name", ""),
+        builder=builder,
+        env=env,
+        outputs=outputs,
+        input_drvs=input_drvs,
+        input_srcs=list(input_srcs),
+        structured_attrs=structured_attrs,
     )
 
 def load_drv_graph(drv_paths: Union[str, list[str]]) -> dict[str, DrvInfo]:
-    """Load the full transitive .drv graph via `nix derivation show -r`.
+    """Load the full transitive .drv graph by reading .drv files from disk.
 
-    Accepts a single drv path or a list of paths (batched into one call).
-    Returns a dict mapping drv paths to DrvInfo objects.
+    Accepts a single drv path or a list of paths. Returns a dict mapping
+    drv paths to DrvInfo objects.
     """
     if isinstance(drv_paths, str):
         drv_paths = [drv_paths]
-    result = subprocess.run(
-        [make_nix_bin_path("nix"), "derivation", "show", "-r"]
-        + drv_paths
-        + make_extra_experimental_features_args(),
-        stdout=PIPE, text=True, check=True,
-    )
-    raw = json.loads(result.stdout)
-    return {path: _parse_drv_json(path, data) for path, data in raw.items()}
+    visited: dict[str, DrvInfo] = {}
+    queue: deque[str] = deque(drv_paths)
+    while queue:
+        p = queue.popleft()
+        if p in visited:
+            continue
+        try:
+            drv = _parse_drv_file(p)
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"Derivation not found on disk: {p}. "
+                f"It may have been garbage-collected; "
+                f"try `nix-store --realise <root>` first.")
+        visited[p] = drv
+        queue.extend(drv.input_drvs.keys())
+    return visited
 
 # FOD naming
 
@@ -1453,34 +1563,53 @@ def collect_sources(
 
     return sources
 
+def _normalize_input_path(root: str) -> str:
+    """Follow ./result-style symlinks; pass bare store names through.
+
+    Unconditional Path.resolve() would rewrite a bare store-path basename
+    (e.g. 'xxx-hello.drv') as a cwd-relative absolute path, which is wrong.
+    Only resolve when the input refers to something on the filesystem.
+    """
+    p = Path(root)
+    if p.exists() or p.is_symlink():
+        return str(p.resolve())
+    return root
+
 def _resolve_drv_path(path: str) -> str:
     """Resolve a store path to its .drv path if needed."""
     if path.endswith(".drv"):
         return path
     result = subprocess.run(
-        [make_nix_bin_path("nix"), "derivation", "show", path]
-        + make_extra_experimental_features_args(),
+        [make_nix_bin_path("nix-store"), "--query", "--deriver", path],
         stdout=PIPE, text=True, check=True,
     )
-    drv_path = next(iter(json.loads(result.stdout).keys()))
+    drv_path = result.stdout.strip()
+    if not drv_path or drv_path == "unknown-deriver" or not Path(drv_path).exists():
+        raise RuntimeError(
+            f"No usable .drv registered for {path}. "
+            f"The path may have been substituted from a binary cache without "
+            f"its .drv, or built against a drv that's since been GC'd. "
+            f"Try re-instantiating with `nix-instantiate` or building with "
+            f"`nix-build` to get a live .drv.")
     print(f"Resolved {path} to {drv_path}", file=sys.stderr)
     return drv_path
 
 def compute_sources(drv_path: str, exclude_drvs: list[str]) -> list[SourceEntry]:
     """Full pipeline: load graph, walk, exclude, collect sources."""
-    drv_path = _resolve_drv_path(drv_path)
+    drv_path = _resolve_drv_path(_normalize_input_path(drv_path))
     print(f"Loading target graph: {drv_path}", file=sys.stderr)
     drvs = load_drv_graph(drv_path)
     print(f"  {len(drvs)} derivations", file=sys.stderr)
 
     visited, parent_map = walk_drv_graph_with_parents(drvs, drv_path)
 
-    # Build exclusion set (single batched call for all excludes)
+    # Build exclusion set
     exclude_set: set[str] = set()
     if exclude_drvs:
-        for exc in exclude_drvs:
+        resolved_excludes = [_resolve_drv_path(_normalize_input_path(e)) for e in exclude_drvs]
+        for exc in resolved_excludes:
             print(f"Loading exclude graph: {exc}", file=sys.stderr)
-        exc_drvs = load_drv_graph(exclude_drvs)
+        exc_drvs = load_drv_graph(resolved_excludes)
         print(f"  {len(exc_drvs)} derivations total", file=sys.stderr)
         exclude_set = set(exc_drvs.keys())
 
@@ -1500,8 +1629,7 @@ def compute_sources(drv_path: str, exclude_drvs: list[str]) -> list[SourceEntry]
 
 def run_sources_list(root: str, exclude: list[str], output_format: str, **_kwargs) -> None:
     """List sources for a single derivation."""
-    root_path = str(Path(root).resolve())
-    sources = compute_sources(root_path, exclude or [])
+    sources = compute_sources(root, exclude or [])
 
     if output_format == "json":
         entries = [{"path": s.path, "name": s.name, "kind": s.kind, "parent": s.parent}
@@ -1549,8 +1677,8 @@ def run_sources_diff(
     Uses nvd's package-level diffing (by pname) to match parents across
     version changes, then shows per-source detail within each changed package.
     """
-    left_sources = compute_sources(str(Path(root1).resolve()), exclude or [])
-    right_sources = compute_sources(str(Path(root2).resolve()), exclude or [])
+    left_sources = compute_sources(root1, exclude or [])
+    right_sources = compute_sources(root2, exclude or [])
 
     # Package-level diff using nvd's existing machinery
     left_pkg_set = _sources_to_package_set(left_sources)
@@ -1654,8 +1782,7 @@ def run_sources_diff(
 
 def run_sources_collect(root: str, exclude: list[str], output: str, **_kwargs) -> None:
     """Create a symlink directory tree of sources."""
-    root_path = str(Path(root).resolve())
-    sources = compute_sources(root_path, exclude or [])
+    sources = compute_sources(root, exclude or [])
     out = Path(output)
     out.mkdir(parents=True, exist_ok=False)
     for s in sources:
